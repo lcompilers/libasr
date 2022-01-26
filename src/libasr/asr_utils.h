@@ -529,6 +529,26 @@ static inline bool is_pointer(ASR::ttype_t *x) {
     return ASR::is_a<ASR::Pointer_t>(*x);
 }
 
+static inline bool is_integer(ASR::ttype_t &x) {
+    return ASR::is_a<ASR::Integer_t>(*type_get_past_pointer(&x));
+}
+
+static inline bool is_real(ASR::ttype_t &x) {
+    return ASR::is_a<ASR::Real_t>(*type_get_past_pointer(&x));
+}
+
+static inline bool is_character(ASR::ttype_t &x) {
+    return ASR::is_a<ASR::Character_t>(*type_get_past_pointer(&x));
+}
+
+static inline bool is_complex(ASR::ttype_t &x) {
+    return ASR::is_a<ASR::Complex_t>(*type_get_past_pointer(&x));
+}
+
+static inline bool is_logical(ASR::ttype_t &x) {
+    return ASR::is_a<ASR::Logical_t>(*type_get_past_pointer(&x));
+}
+
 inline bool is_array(ASR::ttype_t *x) {
     int n_dims = 0;
     switch (x->type) {
@@ -702,6 +722,17 @@ inline bool is_same_type_pointer(ASR::ttype_t* source, ASR::ttype_t* dest) {
 
                 return ASRUtils::is_same_type_pointer(x, y);
             }
+
+int select_generic_procedure(const Vec<ASR::expr_t*> &args,
+        const ASR::GenericProcedure_t &p, Location loc,
+        const std::function<void (const std::string &, const Location &)> err);
+
+ASR::asr_t* symbol_resolve_external_generic_procedure_without_eval(
+            const Location &loc,
+            ASR::symbol_t *v, Vec<ASR::expr_t*> args,
+            SymbolTable* current_scope, Allocator& al,
+            const std::function<void (const std::string &, const Location &)> err);
+
 } // namespace ASRUtils
 
 } // namespace LFortran
