@@ -24,6 +24,7 @@ set(SRC
     pass/do_loops.cpp
     pass/for_all.cpp
     pass/global_stmts.cpp
+    pass/global_stmts_program.cpp
     pass/select_case.cpp
     pass/implied_do_loops.cpp
     pass/array_op.cpp
@@ -33,6 +34,10 @@ set(SRC
     pass/pass_utils.cpp
     pass/unused_functions.cpp
     pass/flip_sign.cpp
+    pass/div_to_mul.cpp
+    pass/fma.cpp
+    pass/sign_from_value.cpp
+    pass/inline_function_calls.cpp
 
     asr_verify.cpp
     asr_utils.cpp
