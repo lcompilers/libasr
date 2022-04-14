@@ -38,6 +38,8 @@ set(SRC
     pass/fma.cpp
     pass/sign_from_value.cpp
     pass/inline_function_calls.cpp
+    pass/loop_unroll.cpp
+    pass/dead_code_removal.cpp
 
     asr_verify.cpp
     asr_utils.cpp

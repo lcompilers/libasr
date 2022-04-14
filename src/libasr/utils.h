@@ -25,10 +25,12 @@ struct CompilerOptions {
     bool show_stacktrace = false;
     bool use_colors = true;
     bool indent = false;
+    bool tree = false;
     bool fast = false;
     bool openmp = false;
     bool no_warnings = false;
     bool no_error_banner = false;
+    bool new_parser = false;
     std::string target = "";
     Platform platform;
 
