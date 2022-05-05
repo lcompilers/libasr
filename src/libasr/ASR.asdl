@@ -105,10 +105,12 @@ symbol
     | ClassType(symbol_table symtab, identifier name, abi abi, access access)
     | ClassProcedure(symbol_table parent_symtab, identifier name, identifier
         proc_name, symbol proc, abi abi)
+    | AssociateBlock(symbol_table symtab, identifier name, stmt* body)
+    | Block(symbol_table symtab, identifier name, stmt* body)
 
 storage_type = Default | Save | Parameter | Allocatable
 access = Public | Private
-intent = Local | In | Out | InOut | ReturnVar | Unspecified | AssociateBlock
+intent = Local | In | Out | InOut | ReturnVar | Unspecified
 deftype = Implementation | Interface
 presence = Required | Optional
 
@@ -176,11 +178,11 @@ stmt
     | If(expr test, stmt* body, stmt* orelse)
     | IfArithmetic(expr test, int lt_label, int eq_label, int gt_label)
     | Print(expr? fmt, expr* values)
-    | Open(int label, expr? newunit, expr? filename, expr? status)
-    | Close(int label, expr? unit, expr? iostat, expr? iomsg, expr? err, expr? status)
-    | Read(int label, expr? unit, expr? fmt, expr? iomsg, expr? iostat, expr? id, expr* values)
-    | Rewind(int label, expr? unit, expr? iostat, expr? err)
-    | Inquire(int label, expr? unit, expr? file, expr? iostat, expr? err,
+    | FileOpen(int label, expr? newunit, expr? filename, expr? status)
+    | FileClose(int label, expr? unit, expr? iostat, expr? iomsg, expr? err, expr? status)
+    | FileRead(int label, expr? unit, expr? fmt, expr? iomsg, expr? iostat, expr? id, expr* values)
+    | FileRewind(int label, expr? unit, expr? iostat, expr? err)
+    | FileInquire(int label, expr? unit, expr? file, expr? iostat, expr? err,
               expr? exist, expr? opened, expr? number, expr? named,
               expr? name, expr? access, expr? sequential, expr? direct,
               expr? form, expr? formatted, expr? unformatted, expr? recl,
@@ -188,7 +190,7 @@ stmt
               expr? read, expr? write, expr? readwrite, expr? delim,
               expr? pad, expr? flen, expr? blocksize, expr? convert,
               expr? carriagecontrol, expr? iolength)
-    | Write(int label, expr? unit, expr? fmt, expr? iomsg, expr? iostat, expr? id, expr* values)
+    | FileWrite(int label, expr? unit, expr? fmt, expr? iomsg, expr? iostat, expr? id, expr* values)
     | Return()
     | Select(expr test, case_stmt* body, stmt* default)
     | Stop(expr? code)
@@ -199,6 +201,13 @@ stmt
     | Nullify(symbol* vars)
     | Flush(int label, expr unit, expr? err, expr? iomsg, expr? iostat)
     | ListAppend(symbol a, expr ele)
+    | AssociateBlockCall(symbol m)
+    | BlockCall(symbol m)
+    | SetInsert(symbol a, expr ele)
+    | SetRemove(symbol a, expr ele)
+    | ListInsert(symbol a, expr pos, expr ele)
+    | ListRemove(symbol a, expr ele)
+    | DictInsert(symbol a, expr key, expr value)
 
 
 expr
@@ -214,23 +223,43 @@ expr
     | FunctionCall(symbol name, symbol? original_name,
             call_arg* args, ttype type, expr? value, expr? dt)
     | DerivedTypeConstructor(symbol dt_sym, expr* args, ttype type)
-    | ConstantArray(expr* args, ttype type)
     | ImpliedDoLoop(expr* values, expr var, expr start, expr end,
                     expr? increment, ttype type, expr? value)
-    | ConstantInteger(int n, ttype type)
-    | ConstantReal(float r, ttype type)
-    | ConstantComplex(float re, float im, ttype type)
-    | ConstantLogical(bool value, ttype type)
-    | ConstantList(expr* args, ttype type)
-    | ConstantSet(expr* elements, ttype type)
-    | ConstantTuple(expr* elements, ttype type)
-    | ConstantString(string s, ttype type)
-    | ConstantDictionary(expr* keys, expr* values, ttype type)
-    | BOZ(int v, boz boz_type, ttype? type)
+    | IntegerConstant(int n, ttype type)
+    | IntegerBOZ(int v, integerboz intboz_type, ttype? type)
+    | RealConstant(float r, ttype type)
+    | ComplexConstant(float re, float im, ttype type)
+    | LogicalConstant(bool value, ttype type)
+
+    | ListConstant(expr* args, ttype type)
+    | ListLen(expr arg, ttype type, expr? value)
+    | ListConcat(expr left, expr right, ttype type, expr? value)
+
+    | ArrayConstant(expr* args, ttype type)
+
+    | SetConstant(expr* elements, ttype type)
+    | SetLen(expr arg, ttype type, expr? value)
+
+    | TupleConstant(expr* elements, ttype type)
+    | TupleLen(expr arg, ttype type, expr? value)
+
+    | StringConstant(string s, ttype type)
+    | StringConcat(expr left, expr right, ttype type, expr? value)
+    | StringLen(expr arg, ttype type, expr? value)
+
+    | DictConstant(expr* keys, expr* values, ttype type)
+    | DictLen(expr arg, ttype type, expr? value)
     | Var(symbol v)
     | ArrayRef(symbol v, array_index* args, ttype type, expr? value)
+    | ArraySize(expr v, expr? dim, ttype type, expr? value)
+    | ArrayBound(expr v, expr? dim ttype type, arraybound bound,
+                 expr? value)
     | DerivedRef(expr v, symbol m, ttype type, expr? value)
     | Cast(expr arg, cast_kind kind, ttype type, expr? value)
+    | ComplexRe(expr arg, ttype type, expr? value)
+    | ComplexIm(expr arg, ttype type, expr? value)
+    | DictItem(symbol a, expr key, expr? default, ttype type)
+
 
 -- `len` in Character:
 -- >=0 ... the length of the string, known at compile time
@@ -258,11 +287,13 @@ binop = Add | Sub | Mul | Div | Pow
 
 unaryop = Invert | Not | UAdd | USub
 
-strop = Concat | Repeat
+strop = Repeat
 
 cmpop = Eq | NotEq | Lt | LtE | Gt | GtE
 
-boz = Binary | Hex | Octal
+integerboz = Binary | Hex | Octal
+
+arraybound = LBound | UBound
 
 cast_kind
     = RealToInteger

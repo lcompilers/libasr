@@ -189,15 +189,15 @@ namespace LFortran {
                 char* idx_var_name = (char*)const_idx_var_name;
                 ASR::expr_t* idx_var = nullptr;
                 ASR::ttype_t* int32_type = LFortran::ASRUtils::TYPE(ASR::make_Integer_t(al, loc, 4, nullptr, 0));
-                if( current_scope->scope.find(std::string(idx_var_name)) == current_scope->scope.end() ) {
+                if( current_scope->get_symbol(std::string(idx_var_name)) == nullptr ) {
                     ASR::asr_t* idx_sym = ASR::make_Variable_t(al, loc, current_scope, idx_var_name,
                                                             ASR::intentType::Local, nullptr, nullptr, ASR::storage_typeType::Default,
                                                             int32_type, ASR::abiType::Source, ASR::accessType::Public,
                                                             ASR::presenceType::Required, false);
-                    current_scope->scope[std::string(idx_var_name)] = ASR::down_cast<ASR::symbol_t>(idx_sym);
+                    current_scope->add_symbol(std::string(idx_var_name), ASR::down_cast<ASR::symbol_t>(idx_sym));
                     idx_var = LFortran::ASRUtils::EXPR(ASR::make_Var_t(al, loc, ASR::down_cast<ASR::symbol_t>(idx_sym)));
                 } else {
-                    ASR::symbol_t* idx_sym = current_scope->scope[std::string(idx_var_name)];
+                    ASR::symbol_t* idx_sym = current_scope->get_symbol(std::string(idx_var_name));
                     idx_var = LFortran::ASRUtils::EXPR(ASR::make_Var_t(al, loc, idx_sym));
 
                 }
@@ -224,8 +224,8 @@ namespace LFortran {
             ASR::symbol_t *t = m->m_symtab->resolve_symbol(remote_sym);
 
             std::string sym = remote_sym;
-            if( current_scope->scope.find(sym) != current_scope->scope.end() ) {
-                v = current_scope->scope[sym];
+            if( current_scope->get_symbol(sym) != nullptr ) {
+                v = current_scope->get_symbol(sym);
                 if( !ASRUtils::is_intrinsic_optimization<ASR::symbol_t>(v) ) {
                     sym += "@IntrinsicOptimization";
                 } else {
@@ -237,7 +237,7 @@ namespace LFortran {
                                                         s2c(al, sym), t,
                                                         s2c(al, module_name), nullptr, 0, s2c(al, remote_sym),
                                                         ASR::accessType::Private);
-            current_scope->scope[sym] = ASR::down_cast<ASR::symbol_t>(fn);
+            current_scope->add_symbol(sym, ASR::down_cast<ASR::symbol_t>(fn));
             v = ASR::down_cast<ASR::symbol_t>(fn);
             current_scope = current_scope_copy;
             return v;
@@ -265,10 +265,10 @@ namespace LFortran {
                                                         mfn->m_name, (ASR::symbol_t*)mfn,
                                                         m->m_name, nullptr, 0, mfn->m_name, ASR::accessType::Private);
             std::string sym = mfn->m_name;
-            if( current_scope->scope.find(sym) != current_scope->scope.end() ) {
-                v = current_scope->scope[sym];
+            if( current_scope->get_symbol(sym) != nullptr ) {
+                v = current_scope->get_symbol(sym);
             } else {
-                current_scope->scope[sym] = ASR::down_cast<ASR::symbol_t>(fn);
+                current_scope->add_symbol(sym, ASR::down_cast<ASR::symbol_t>(fn));
                 v = ASR::down_cast<ASR::symbol_t>(fn);
             }
             current_scope = current_scope_copy;
@@ -285,8 +285,8 @@ namespace LFortran {
             SymbolTable* current_scope2 = unit.m_global_scope;
 
             ASR::Module_t *m;
-            if (current_scope2->scope.find(module_name) != current_scope2->scope.end()) {
-                ASR::symbol_t *sm = current_scope2->scope[module_name];
+            if (current_scope2->get_symbol(module_name) != nullptr) {
+                ASR::symbol_t *sm = current_scope2->get_symbol(module_name);
                 if (ASR::is_a<ASR::Module_t>(*sm)) {
                     m = ASR::down_cast<ASR::Module_t>(sm);
                 } else {
@@ -304,10 +304,10 @@ namespace LFortran {
                                                         mfn->m_name, (ASR::symbol_t*)mfn,
                                                         m->m_name, nullptr, 0, mfn->m_name, ASR::accessType::Private);
             std::string sym = mfn->m_name;
-            if( current_scope2->scope.find(sym) != current_scope2->scope.end() ) {
-                v = current_scope2->scope[sym];
+            if( current_scope2->get_symbol(sym) != nullptr ) {
+                v = current_scope2->get_symbol(sym);
             } else {
-                current_scope2->scope[sym] = ASR::down_cast<ASR::symbol_t>(fn);
+                current_scope2->add_symbol(sym, ASR::down_cast<ASR::symbol_t>(fn));
                 v = ASR::down_cast<ASR::symbol_t>(fn);
             }
             current_scope2 = current_scope_copy;
@@ -335,7 +335,7 @@ namespace LFortran {
             ASR::call_arg_t arg0, arg1;
             arg0.loc = arr_expr->base.loc, arg0.m_value = arr_expr;
             args.push_back(al, arg0);
-            ASR::expr_t* const_1 = LFortran::ASRUtils::EXPR(ASR::make_ConstantInteger_t(al, arr_expr->base.loc, dim, LFortran::ASRUtils::expr_type(mfn->m_args[1])));
+            ASR::expr_t* const_1 = LFortran::ASRUtils::EXPR(ASR::make_IntegerConstant_t(al, arr_expr->base.loc, dim, LFortran::ASRUtils::expr_type(mfn->m_args[1])));
             arg1.loc = const_1->base.loc, arg1.m_value = const_1;
             args.push_back(al, arg1);
             ASR::ttype_t *type = LFortran::ASRUtils::EXPR2VAR(ASR::down_cast<ASR::Function_t>(
@@ -415,8 +415,8 @@ namespace LFortran {
                                                     ASR::intentType::Local, nullptr, nullptr, ASR::storage_typeType::Default,
                                                     ASRUtils::expr_type(expr), ASR::abiType::Source, ASR::accessType::Public,
                                                     ASR::presenceType::Required, false);
-            if( current_scope->scope.find(name) == current_scope->scope.end() ) {
-                current_scope->scope[name] = ASR::down_cast<ASR::symbol_t>(expr_sym);
+            if( current_scope->get_symbol(name) == nullptr ) {
+                current_scope->add_symbol(name, ASR::down_cast<ASR::symbol_t>(expr_sym));
             } else {
                 throw LFortranException("Symbol with " + name + " is already present in " + std::to_string(current_scope->counter));
             }
@@ -431,8 +431,8 @@ namespace LFortran {
                                                     ASR::intentType::Local, nullptr, nullptr, ASR::storage_typeType::Default,
                                                     var_type, ASR::abiType::Source, ASR::accessType::Public,
                                                     ASR::presenceType::Required, false);
-            if( current_scope->scope.find(name) == current_scope->scope.end() ) {
-                current_scope->scope[name] = ASR::down_cast<ASR::symbol_t>(expr_sym);
+            if( current_scope->get_symbol(name) == nullptr ) {
+                current_scope->add_symbol(name, ASR::down_cast<ASR::symbol_t>(expr_sym));
             } else {
                 throw LFortranException("Symbol with " + name + " is already present in " + std::to_string(current_scope->counter));
             }
@@ -488,23 +488,23 @@ namespace LFortran {
             ASR::stmt_t *stmt1 = nullptr;
             if( !a && !b && !c ) {
                 ASR::ttype_t *cond_type = LFortran::ASRUtils::TYPE(ASR::make_Logical_t(al, loc, 4, nullptr, 0));
-                cond = LFortran::ASRUtils::EXPR(ASR::make_ConstantLogical_t(al, loc, true, cond_type));
+                cond = LFortran::ASRUtils::EXPR(ASR::make_LogicalConstant_t(al, loc, true, cond_type));
             } else {
                 LFORTRAN_ASSERT(a);
                 LFORTRAN_ASSERT(b);
                 if (!c) {
                     ASR::ttype_t *type = LFortran::ASRUtils::TYPE(ASR::make_Integer_t(al, loc, 4, nullptr, 0));
-                    c = LFortran::ASRUtils::EXPR(ASR::make_ConstantInteger_t(al, loc, 1, type));
+                    c = LFortran::ASRUtils::EXPR(ASR::make_IntegerConstant_t(al, loc, 1, type));
                 }
                 LFORTRAN_ASSERT(c);
                 int increment;
-                if (c->type == ASR::exprType::ConstantInteger) {
-                    increment = ASR::down_cast<ASR::ConstantInteger_t>(c)->m_n;
+                if (c->type == ASR::exprType::IntegerConstant) {
+                    increment = ASR::down_cast<ASR::IntegerConstant_t>(c)->m_n;
                 } else if (c->type == ASR::exprType::UnaryOp) {
                     ASR::UnaryOp_t *u = ASR::down_cast<ASR::UnaryOp_t>(c);
                     LFORTRAN_ASSERT(u->m_op == ASR::unaryopType::USub);
-                    LFORTRAN_ASSERT(u->m_operand->type == ASR::exprType::ConstantInteger);
-                    increment = - ASR::down_cast<ASR::ConstantInteger_t>(u->m_operand)->m_n;
+                    LFORTRAN_ASSERT(u->m_operand->type == ASR::exprType::IntegerConstant);
+                    increment = - ASR::down_cast<ASR::IntegerConstant_t>(u->m_operand)->m_n;
                 } else {
                     throw LFortranException("Do loop increment type not supported");
                 }

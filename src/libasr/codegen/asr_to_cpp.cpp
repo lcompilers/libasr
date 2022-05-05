@@ -51,9 +51,9 @@ std::string convert_dims(size_t n_dims, ASR::dimension_t *m_dims)
         if (!start && !end) {
             dims += "*";
         } else if (start && end) {
-            if (ASR::is_a<ASR::ConstantInteger_t>(*start) && ASR::is_a<ASR::ConstantInteger_t>(*end)) {
-                ASR::ConstantInteger_t *s = ASR::down_cast<ASR::ConstantInteger_t>(start);
-                ASR::ConstantInteger_t *e = ASR::down_cast<ASR::ConstantInteger_t>(end);
+            if (ASR::is_a<ASR::IntegerConstant_t>(*start) && ASR::is_a<ASR::IntegerConstant_t>(*end)) {
+                ASR::IntegerConstant_t *s = ASR::down_cast<ASR::IntegerConstant_t>(start);
+                ASR::IntegerConstant_t *e = ASR::down_cast<ASR::IntegerConstant_t>(end);
                 if (s->m_n == 1) {
                     dims += "[" + std::to_string(e->m_n) + "]";
                 } else {
@@ -187,6 +187,7 @@ R"(#include <iostream>
 #include <vector>
 #include <cassert>
 #include <cmath>
+#include <complex>
 #include <Kokkos_Core.hpp>
 #include <lfortran_intrinsics.h>
 
@@ -212,10 +213,10 @@ Kokkos::View<T*> from_std_vector(const std::vector<T> &v)
             std::vector<std::string> build_order
                 = LFortran::ASRUtils::determine_module_dependencies(x);
             for (auto &item : build_order) {
-                LFORTRAN_ASSERT(x.m_global_scope->scope.find(item)
-                    != x.m_global_scope->scope.end());
+                LFORTRAN_ASSERT(x.m_global_scope->get_scope().find(item)
+                    != x.m_global_scope->get_scope().end());
                 if (startswith(item, "lfortran_intrinsic")) {
-                    ASR::symbol_t *mod = x.m_global_scope->scope[item];
+                    ASR::symbol_t *mod = x.m_global_scope->get_symbol(item);
                     visit_symbol(*mod);
                     unit_src += src;
                 }
@@ -223,7 +224,7 @@ Kokkos::View<T*> from_std_vector(const std::vector<T> &v)
         }
 
         // Process procedures first:
-        for (auto &item : x.m_global_scope->scope) {
+        for (auto &item : x.m_global_scope->get_scope()) {
             if (ASR::is_a<ASR::Function_t>(*item.second)
                 || ASR::is_a<ASR::Subroutine_t>(*item.second)) {
                 visit_symbol(*item.second);
@@ -235,17 +236,17 @@ Kokkos::View<T*> from_std_vector(const std::vector<T> &v)
         std::vector<std::string> build_order
             = LFortran::ASRUtils::determine_module_dependencies(x);
         for (auto &item : build_order) {
-            LFORTRAN_ASSERT(x.m_global_scope->scope.find(item)
-                != x.m_global_scope->scope.end());
+            LFORTRAN_ASSERT(x.m_global_scope->get_scope().find(item)
+                != x.m_global_scope->get_scope().end());
             if (!startswith(item, "lfortran_intrinsic")) {
-                ASR::symbol_t *mod = x.m_global_scope->scope[item];
+                ASR::symbol_t *mod = x.m_global_scope->get_symbol(item);
                 visit_symbol(*mod);
                 unit_src += src;
             }
         }
 
         // Then the main program:
-        for (auto &item : x.m_global_scope->scope) {
+        for (auto &item : x.m_global_scope->get_scope()) {
             if (ASR::is_a<ASR::Program_t>(*item.second)) {
                 visit_symbol(*item.second);
                 unit_src += src;
@@ -263,7 +264,7 @@ Kokkos::View<T*> from_std_vector(const std::vector<T> &v)
         }
         // Generate code for nested subroutines and functions first:
         std::string contains;
-        for (auto &item : x.m_symtab->scope) {
+        for (auto &item : x.m_symtab->get_scope()) {
             if (ASR::is_a<ASR::Subroutine_t>(*item.second)) {
                 ASR::Subroutine_t *s = ASR::down_cast<ASR::Subroutine_t>(item.second);
                 visit_Subroutine(*s);
@@ -282,7 +283,7 @@ Kokkos::View<T*> from_std_vector(const std::vector<T> &v)
     void visit_Program(const ASR::Program_t &x) {
         // Generate code for nested subroutines and functions first:
         std::string contains;
-        for (auto &item : x.m_symtab->scope) {
+        for (auto &item : x.m_symtab->get_scope()) {
             if (ASR::is_a<ASR::Subroutine_t>(*item.second)) {
                 ASR::Subroutine_t *s = ASR::down_cast<ASR::Subroutine_t>(item.second);
                 visit_Subroutine(*s);
@@ -301,7 +302,7 @@ Kokkos::View<T*> from_std_vector(const std::vector<T> &v)
         indentation_level += 1;
         std::string indent(indentation_level*indentation_spaces, ' ');
         std::string decl;
-        for (auto &item : x.m_symtab->scope) {
+        for (auto &item : x.m_symtab->get_scope()) {
             if (ASR::is_a<ASR::Variable_t>(*item.second)) {
                 ASR::Variable_t *v = ASR::down_cast<ASR::Variable_t>(item.second);
                 decl += indent;
@@ -340,7 +341,7 @@ Kokkos::View<T*> from_std_vector(const std::vector<T> &v)
         }
         sub += ")\n";
 
-        for (auto &item : x.m_symtab->scope) {
+        for (auto &item : x.m_symtab->get_scope()) {
             if (ASR::is_a<ASR::Variable_t>(*item.second)) {
                 ASR::Variable_t *v = ASR::down_cast<ASR::Variable_t>(item.second);
                 if (v->m_intent == LFortran::ASRUtils::intent_local) {
@@ -358,7 +359,7 @@ Kokkos::View<T*> from_std_vector(const std::vector<T> &v)
         }
 
         std::string decl;
-        for (auto &item : x.m_symtab->scope) {
+        for (auto &item : x.m_symtab->get_scope()) {
             if (ASR::is_a<ASR::Variable_t>(*item.second)) {
                 ASR::Variable_t *v = ASR::down_cast<ASR::Variable_t>(item.second);
                 if (v->m_intent == LFortran::ASRUtils::intent_local) {
@@ -434,7 +435,7 @@ Kokkos::View<T*> from_std_vector(const std::vector<T> &v)
         indentation_level += 1;
         std::string indent(indentation_level*indentation_spaces, ' ');
         std::string decl;
-        for (auto &item : x.m_symtab->scope) {
+        for (auto &item : x.m_symtab->get_scope()) {
             if (ASR::is_a<ASR::Variable_t>(*item.second)) {
                 ASR::Variable_t *v = ASR::down_cast<ASR::Variable_t>(item.second);
                 if (v->m_intent == LFortran::ASRUtils::intent_local || v->m_intent == LFortran::ASRUtils::intent_return_var) {
@@ -522,6 +523,24 @@ Kokkos::View<T*> from_std_vector(const std::vector<T> &v)
         last_expr_precedence = 2;
     }
 
+    void visit_ArraySize(const ASR::ArraySize_t& x) {
+        visit_expr(*x.m_v);
+        std::string var_name = src;
+        std::string args = "";
+        if (x.m_dim == nullptr) {
+            // TODO: return the product of all dimensions:
+            args = "0";
+        } else {
+            if( x.m_dim ) {
+                visit_expr(*x.m_dim);
+                args += src + "-1";
+                args += ", ";
+            }
+            args += std::to_string(ASRUtils::extract_kind_from_ttype_t(x.m_type)) + "-1";
+        }
+        src = var_name + ".extent(" + args + ")";
+    }
+
     void visit_Assignment(const ASR::Assignment_t &x) {
         std::string target;
         if (ASR::is_a<ASR::Var_t>(*x.m_target)) {
@@ -538,27 +557,27 @@ Kokkos::View<T*> from_std_vector(const std::vector<T> &v)
         src = indent + target + " = " + value + ";\n";
     }
 
-    void visit_ConstantInteger(const ASR::ConstantInteger_t &x) {
+    void visit_IntegerConstant(const ASR::IntegerConstant_t &x) {
         src = std::to_string(x.m_n);
         last_expr_precedence = 2;
     }
 
-    void visit_ConstantReal(const ASR::ConstantReal_t &x) {
+    void visit_RealConstant(const ASR::RealConstant_t &x) {
         src = std::to_string(x.m_r);
         last_expr_precedence = 2;
     }
 
-    void visit_ConstantString(const ASR::ConstantString_t &x) {
+    void visit_StringConstant(const ASR::StringConstant_t &x) {
         src = "\"" + std::string(x.m_s) + "\"";
         last_expr_precedence = 2;
     }
 
-    void visit_ConstantComplex(const ASR::ConstantComplex_t &x) {
-        src = "{" + std::to_string(x.m_re) + ", " + std::to_string(x.m_im) + "}";
+    void visit_ComplexConstant(const ASR::ComplexConstant_t &x) {
+        src = "std::complex<double>(" + std::to_string(x.m_re) + ", " + std::to_string(x.m_im) + ")";
         last_expr_precedence = 2;
     }
 
-    void visit_ConstantLogical(const ASR::ConstantLogical_t &x) {
+    void visit_LogicalConstant(const ASR::LogicalConstant_t &x) {
         if (x.m_value == true) {
             src = "true";
         } else {
@@ -567,7 +586,7 @@ Kokkos::View<T*> from_std_vector(const std::vector<T> &v)
         last_expr_precedence = 2;
     }
 
-    void visit_ConstantSet(const ASR::ConstantSet_t &x) {
+    void visit_SetConstant(const ASR::SetConstant_t &x) {
         std::string out = "{";
         for (size_t i=0; i<x.n_elements; i++) {
             visit_expr(*x.m_elements[i]);
@@ -604,7 +623,7 @@ Kokkos::View<T*> from_std_vector(const std::vector<T> &v)
         src = out;
     }
 
-    void visit_ConstantDictionary(const ASR::ConstantDictionary_t &x) {
+    void visit_DictConstant(const ASR::DictConstant_t &x) {
         LFORTRAN_ASSERT(x.n_keys == x.n_values);
         std::string out = "{";
         for(size_t i=0; i<x.n_keys; i++) {
@@ -639,6 +658,13 @@ Kokkos::View<T*> from_std_vector(const std::vector<T> &v)
             case (ASR::cast_kindType::IntegerToInteger) : {
                 // In C++, we do not need to cast int <-> long long explicitly:
                 // src = src;
+                break;
+            }
+            case (ASR::cast_kindType::ComplexToComplex) : {
+                break;
+            }
+            case (ASR::cast_kindType::IntegerToComplex) : {
+                src = "std::complex<double>(" + src + ")";
                 break;
             }
             case (ASR::cast_kindType::ComplexToReal) : {
@@ -801,7 +827,7 @@ Kokkos::View<T*> from_std_vector(const std::vector<T> &v)
         }
     }
 
-    void visit_StrOp(const ASR::StrOp_t &x) {
+    void visit_StringConcat(const ASR::StringConcat_t &x) {
         this->visit_expr(*x.m_left);
         std::string left = std::move(src);
         int left_precedence = last_expr_precedence;
@@ -862,7 +888,7 @@ Kokkos::View<T*> from_std_vector(const std::vector<T> &v)
         }
     }
 
-    void visit_ConstantArray(const ASR::ConstantArray_t &x) {
+    void visit_ArrayConstant(const ASR::ArrayConstant_t &x) {
         std::string out = "from_std_vector<float>({";
         for (size_t i=0; i<x.n_args; i++) {
             this->visit_expr(*x.m_args[i]);
@@ -941,7 +967,7 @@ Kokkos::View<T*> from_std_vector(const std::vector<T> &v)
         src = out;
     }
 
-    void visit_Write(const ASR::Write_t &x) {
+    void visit_FileWrite(const ASR::FileWrite_t &x) {
         std::string indent(indentation_level*indentation_spaces, ' ');
         std::string out = indent + "std::cout ";
         for (size_t i=0; i<x.n_values; i++) {
@@ -952,7 +978,7 @@ Kokkos::View<T*> from_std_vector(const std::vector<T> &v)
         src = out;
     }
 
-    void visit_Read(const ASR::Read_t &x) {
+    void visit_FileRead(const ASR::FileRead_t &x) {
         std::string indent(indentation_level*indentation_spaces, ' ');
         std::string out = indent + "// FIXME: READ: std::cout ";
         for (size_t i=0; i<x.n_values; i++) {
@@ -1030,13 +1056,13 @@ Kokkos::View<T*> from_std_vector(const std::vector<T> &v)
         if (!c) {
             increment = 1;
         } else {
-            if (c->type == ASR::exprType::ConstantInteger) {
-                increment = ASR::down_cast<ASR::ConstantInteger_t>(c)->m_n;
+            if (c->type == ASR::exprType::IntegerConstant) {
+                increment = ASR::down_cast<ASR::IntegerConstant_t>(c)->m_n;
             } else if (c->type == ASR::exprType::UnaryOp) {
                 ASR::UnaryOp_t *u = ASR::down_cast<ASR::UnaryOp_t>(c);
                 LFORTRAN_ASSERT(u->m_op == ASR::unaryopType::USub);
-                LFORTRAN_ASSERT(u->m_operand->type == ASR::exprType::ConstantInteger);
-                increment = - ASR::down_cast<ASR::ConstantInteger_t>(u->m_operand)->m_n;
+                LFORTRAN_ASSERT(u->m_operand->type == ASR::exprType::IntegerConstant);
+                increment = - ASR::down_cast<ASR::IntegerConstant_t>(u->m_operand)->m_n;
             } else {
                 throw CodeGenError("Do loop increment type not supported");
             }

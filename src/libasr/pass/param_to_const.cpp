@@ -41,7 +41,7 @@ public:
     }
 
     void visit_Program(const ASR::Program_t &x) {
-        for (auto &item : x.m_symtab->scope) {
+        for (auto &item : x.m_symtab->get_scope()) {
             if (is_a<ASR::Variable_t>(*item.second)) {
                 ASR::Variable_t *v = down_cast<ASR::Variable_t>(item.second);
                 visit_Variable(*v);
@@ -124,11 +124,11 @@ public:
                     asr = init_var->m_symbolic_value;
                 } else {
                     switch( init_var->m_symbolic_value->type ) {
-                        case ASR::exprType::ConstantInteger:
-                        case ASR::exprType::ConstantReal:
-                        case ASR::exprType::ConstantComplex:
-                        case ASR::exprType::ConstantLogical:
-                        case ASR::exprType::ConstantString: {
+                        case ASR::exprType::IntegerConstant:
+                        case ASR::exprType::RealConstant:
+                        case ASR::exprType::ComplexConstant:
+                        case ASR::exprType::LogicalConstant:
+                        case ASR::exprType::StringConstant: {
                             asr = init_var->m_symbolic_value;
                             break;
                         }
