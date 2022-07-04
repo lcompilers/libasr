@@ -64,8 +64,9 @@ class ASRToCVisitor : public BaseCCPPVisitor<ASRToCVisitor>
 {
 public:
 
-    ASRToCVisitor(diag::Diagnostics &diag, Platform &platform)
-         : BaseCCPPVisitor(diag, platform, false, false, true) {}
+    ASRToCVisitor(diag::Diagnostics &diag, Platform &platform,
+                  int64_t default_lower_bound)
+         : BaseCCPPVisitor(diag, platform, false, false, true, default_lower_bound) {}
 
     std::string convert_dims_c(size_t n_dims, ASR::dimension_t *m_dims)
     {
@@ -84,11 +85,7 @@ public:
                     ASRUtils::extract_value(end_value, end_int);
                     dims += "[" + std::to_string(end_int - start_int + 1) + "]";
                 } else {
-                    this->visit_expr(*start);
-                    std::string start_expr = std::move(src);
-                    this->visit_expr(*end);
-                    std::string end_expr = std::move(src);
-                    dims += "[" + end_expr + " - " + start_expr + " + 1]";
+                    dims += "[ /* FIXME symbolic dimensions */ ]";
                 }
             } else {
                 throw CodeGenError("Dimension type not supported");
@@ -131,16 +128,7 @@ public:
                 headers.insert("inttypes");
                 ASR::Integer_t *t = ASR::down_cast<ASR::Integer_t>(v.m_type);
                 dims = convert_dims_c(t->n_dims, t->m_dims);
-                std::string type_name;
-                if (t->m_kind == 1) {
-                    type_name = "int8_t";
-                } else if (t->m_kind == 2) {
-                    type_name = "int16_t";
-                } else if (t->m_kind == 4) {
-                    type_name = "int32_t";
-                } else if (t->m_kind == 8) {
-                    type_name = "int64_t";
-                }
+                std::string type_name = "int" + std::to_string(t->m_kind * 8) + "_t";
                 sub = format_type_c(dims, type_name, v.m_name, use_ref, dummy);
             } else if (ASRUtils::is_real(*v.m_type)) {
                 ASR::Real_t *t = ASR::down_cast<ASR::Real_t>(v.m_type);
@@ -159,7 +147,7 @@ public:
                 ASR::Logical_t *t = ASR::down_cast<ASR::Logical_t>(v.m_type);
                 dims = convert_dims_c(t->n_dims, t->m_dims);
                 sub = format_type_c(dims, "bool", v.m_name, use_ref, dummy);
-            }else if (ASRUtils::is_character(*v.m_type)) {
+            } else if (ASRUtils::is_character(*v.m_type)) {
                 ASR::Character_t *t = ASR::down_cast<ASR::Character_t>(v.m_type);
                 std::string dims = convert_dims_c(t->n_dims, t->m_dims);
                 sub = format_type_c(dims, "char *", v.m_name, use_ref, dummy);
@@ -503,11 +491,12 @@ R"(
 };
 
 Result<std::string> asr_to_c(Allocator &al, ASR::TranslationUnit_t &asr,
-    diag::Diagnostics &diagnostics, Platform &platform)
+    diag::Diagnostics &diagnostics, Platform &platform,
+    int64_t default_lower_bound)
 {
     pass_unused_functions(al, asr, true);
     pass_replace_class_constructor(al, asr);
-    ASRToCVisitor v(diagnostics, platform);
+    ASRToCVisitor v(diagnostics, platform, default_lower_bound);
     try {
         v.visit_asr((ASR::asr_t &)asr);
     } catch (const CodeGenError &e) {
