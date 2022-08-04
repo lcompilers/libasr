@@ -101,7 +101,7 @@ public:
             LFORTRAN_ASSERT(flip_sign_variable);
             ASR::stmt_t* flip_sign_call = PassUtils::get_flipsign(flip_sign_signal_variable,
                                             flip_sign_variable, al, unit, rl_path, current_scope,
-                                            [&](const std::string &msg, const Location &) { throw LFortranException(msg); });
+                                            [&](const std::string &msg, const Location &) { throw LCompilersException(msg); });
             pass_result.push_back(al, flip_sign_call);
         }
     }
@@ -118,13 +118,12 @@ public:
     }
 
     void visit_Assignment(const ASR::Assignment_t& x) {
-        if( x.m_value->type == ASR::exprType::UnaryOp ) {
+        if( x.m_value->type == ASR::exprType::RealUnaryMinus ) {
             is_unary_op_present = true;
             ASR::symbol_t* sym = nullptr;
-            ASR::UnaryOp_t* negation = ASR::down_cast<ASR::UnaryOp_t>(x.m_value);
-            if( negation->m_operand->type == ASR::exprType::Var &&
-                negation->m_op == ASR::unaryopType::USub ) {
-                ASR::Var_t* var = ASR::down_cast<ASR::Var_t>(negation->m_operand);
+            ASR::RealUnaryMinus_t* negation = ASR::down_cast<ASR::RealUnaryMinus_t>(x.m_value);
+            if( negation->m_arg->type == ASR::exprType::Var ) {
+                ASR::Var_t* var = ASR::down_cast<ASR::Var_t>(negation->m_arg);
                 sym = var->m_v;
             }
             if( x.m_target->type == ASR::exprType::Var ) {
@@ -135,7 +134,28 @@ public:
         }
     }
 
-    void visit_Compare(const ASR::Compare_t& x) {
+    void visit_IntegerCompare(const ASR::IntegerCompare_t& x) {
+        handle_Compare(x);
+    }
+
+    void visit_RealCompare(const ASR::RealCompare_t &x) {
+        handle_Compare(x);
+    }
+
+    void visit_ComplexCompare(const ASR::ComplexCompare_t &x) {
+        handle_Compare(x);
+    }
+
+    void visit_LogicalCompare(const ASR::LogicalCompare_t &x) {
+        handle_Compare(x);
+    }
+
+    void visit_StringCompare(const ASR::StringCompare_t &x) {
+        handle_Compare(x);
+    }
+
+    template <typename T>
+    void handle_Compare(const T& x) {
         is_compare_present = true;
         ASR::expr_t* potential_one = nullptr;
         ASR::expr_t* potential_func_call = nullptr;

@@ -87,7 +87,7 @@ namespace LFortran {
                 */
                 virtual
                 llvm::Value* convert_to_argument(llvm::Value* tmp,
-                    llvm::Type* arg_type) = 0;
+                    llvm::Type* arg_type, bool data_only=false) = 0;
 
                 /*
                 * Returns the type of the argument to be
@@ -139,7 +139,7 @@ namespace LFortran {
                 */
                 virtual
                 void fill_array_details(
-                    llvm::Value* arr, ASR::dimension_t* m_dims, int n_dims,
+                    llvm::Value* arr, int n_dims,
                     std::vector<std::pair<llvm::Value*, llvm::Value*>>& llvm_dims) = 0;
 
                 /*
@@ -193,7 +193,7 @@ namespace LFortran {
                 * implemented by current class.
                 */
                 virtual
-                llvm::Value* get_upper_bound(llvm::Value* dim_des, bool load=true) = 0;
+                llvm::Value* get_upper_bound(llvm::Value* dim_des) = 0;
 
                 /*
                 * Returns stride in the input
@@ -242,13 +242,25 @@ namespace LFortran {
                 */
                 virtual
                 llvm::Value* get_single_element(llvm::Value* array,
-                    std::vector<llvm::Value*>& m_args, int n_args) = 0;
+                    std::vector<llvm::Value*>& m_args, int n_args,
+                    bool data_only=false, llvm::Value** llvm_diminfo=nullptr) = 0;
 
                 virtual
                 llvm::Value* get_is_allocated_flag(llvm::Value* array) = 0;
 
                 virtual
                 void set_is_allocated_flag(llvm::Value* array, uint64_t status) = 0;
+
+                virtual
+                llvm::Value* reshape(llvm::Value* array, llvm::Value* shape,
+                                    llvm::Module* module) = 0;
+
+                virtual
+                void copy_array(llvm::Value* src, llvm::Value* dest) = 0;
+
+                virtual
+                llvm::Value* get_array_size(llvm::Value* array, llvm::Value* dim,
+                                            int output_kind, int dim_kind=4) = 0;
 
         };
 
@@ -268,6 +280,10 @@ namespace LFortran {
                     llvm::Value* arr, std::vector<llvm::Value*>& m_args,
                     int n_args, bool check_for_bounds);
 
+                llvm::Value* cmo_convertor_single_element_data_only(
+                    llvm::Value** llvm_diminfo, std::vector<llvm::Value*>& m_args,
+                    int n_args, bool check_for_bounds);
+
             public:
 
                 SimpleCMODescriptor(llvm::LLVMContext& _context,
@@ -279,7 +295,7 @@ namespace LFortran {
 
                 virtual
                 llvm::Value* convert_to_argument(llvm::Value* tmp,
-                    llvm::Type* arg_type);
+                    llvm::Type* arg_type, bool data_only=false);
 
                 virtual
                 llvm::Type* get_argument_type(llvm::Type* type,
@@ -306,7 +322,7 @@ namespace LFortran {
 
                 virtual
                 void fill_array_details(
-                    llvm::Value* arr, ASR::dimension_t* m_dims, int n_dims,
+                    llvm::Value* arr, int n_dims,
                     std::vector<std::pair<llvm::Value*, llvm::Value*>>& llvm_dims);
 
                 virtual
@@ -338,7 +354,7 @@ namespace LFortran {
                 llvm::Value* get_lower_bound(llvm::Value* dim_des, bool load=true);
 
                 virtual
-                llvm::Value* get_upper_bound(llvm::Value* dim_des, bool load=true);
+                llvm::Value* get_upper_bound(llvm::Value* dim_des);
 
                 virtual
                 llvm::Value* get_dimension_size(llvm::Value* dim_des_arr,
@@ -356,13 +372,25 @@ namespace LFortran {
 
                 virtual
                 llvm::Value* get_single_element(llvm::Value* array,
-                    std::vector<llvm::Value*>& m_args, int n_args);
+                    std::vector<llvm::Value*>& m_args, int n_args,
+                    bool data_only=false, llvm::Value** llvm_diminfo=nullptr);
 
                 virtual
                 llvm::Value* get_is_allocated_flag(llvm::Value* array);
 
                 virtual
                 void set_is_allocated_flag(llvm::Value* array, uint64_t status);
+
+                virtual
+                llvm::Value* reshape(llvm::Value* array, llvm::Value* shape,
+                                    llvm::Module* module);
+
+                virtual
+                void copy_array(llvm::Value* src, llvm::Value* dest);
+
+                virtual
+                llvm::Value* get_array_size(llvm::Value* array, llvm::Value* dim,
+                                            int output_kind, int dim_kind=4);
 
         };
 
