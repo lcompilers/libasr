@@ -137,8 +137,7 @@ R"(#include <stdio.h>
 
         // Process procedures first:
         for (auto &item : x.m_global_scope->get_scope()) {
-            if (ASR::is_a<ASR::Function_t>(*item.second)
-                || ASR::is_a<ASR::Subroutine_t>(*item.second)) {
+            if (ASR::is_a<ASR::Function_t>(*item.second)) {
                 self().visit_symbol(*item.second);
                 unit_src += src;
             }
@@ -179,11 +178,6 @@ R"(#include <stdio.h>
 
         // Generate the bodies of subroutines
         for (auto &item : x.m_symtab->get_scope()) {
-            if (ASR::is_a<ASR::Subroutine_t>(*item.second)) {
-                ASR::Subroutine_t *s = ASR::down_cast<ASR::Subroutine_t>(item.second);
-                self().visit_Subroutine(*s);
-                contains += src;
-            }
             if (ASR::is_a<ASR::Function_t>(*item.second)) {
                 ASR::Function_t *s = ASR::down_cast<ASR::Function_t>(item.second);
                 self().visit_Function(*s);
@@ -198,11 +192,6 @@ R"(#include <stdio.h>
         // Generate code for nested subroutines and functions first:
         std::string contains;
         for (auto &item : x.m_symtab->get_scope()) {
-            if (ASR::is_a<ASR::Subroutine_t>(*item.second)) {
-                ASR::Subroutine_t *s = ASR::down_cast<ASR::Subroutine_t>(item.second);
-                visit_Subroutine(*s);
-                contains += src;
-            }
             if (ASR::is_a<ASR::Function_t>(*item.second)) {
                 ASR::Function_t *s = ASR::down_cast<ASR::Function_t>(item.second);
                 visit_Function(*s);
@@ -236,10 +225,87 @@ R"(#include <stdio.h>
         indentation_level -= 2;
     }
 
+    void visit_BlockCall(const ASR::BlockCall_t &x) {
+        LFORTRAN_ASSERT(ASR::is_a<ASR::Block_t>(*x.m_m));
+        ASR::Block_t* block = ASR::down_cast<ASR::Block_t>(x.m_m);
+        std::string decl, body;
+        std::string indent(indentation_level*indentation_spaces, ' ');
+        std::string open_paranthesis = indent + "{\n";
+        std::string close_paranthesis = indent + "}\n";
+        indent += std::string(indentation_spaces, ' ');
+        indentation_level += 1;
+        for (auto &item : block->m_symtab->get_scope()) {
+            if (ASR::is_a<ASR::Variable_t>(*item.second)) {
+                ASR::Variable_t *v = ASR::down_cast<ASR::Variable_t>(item.second);
+                decl += indent + self().convert_variable_decl(*v) + ";\n";
+            }
+        }
+        for (size_t i=0; i<block->n_body; i++) {
+            self().visit_stmt(*block->m_body[i]);
+            body += src;
+        }
+        src = open_paranthesis + decl + body + close_paranthesis;
+        indentation_level -= 1;
+    }
+
     // Returns the declaration, no semi colon at the end
-    std::string get_subroutine_declaration(const ASR::Subroutine_t &x) {
+    std::string get_function_declaration(const ASR::Function_t &x) {
         template_for_Kokkos.clear();
         template_number = 0;
+        std::string sub, inl;
+        if (x.m_inline) {
+            inl = "inline __attribute__((always_inline)) ";
+        }
+        if (x.m_return_var) {
+            ASR::Variable_t *return_var = LFortran::ASRUtils::EXPR2VAR(x.m_return_var);
+            if (ASRUtils::is_integer(*return_var->m_type)) {
+                int kind = ASR::down_cast<ASR::Integer_t>(return_var->m_type)->m_kind;
+                switch (kind) {
+                    case (1) : sub = "int8_t "; break;
+                    case (2) : sub = "int16_t "; break;
+                    case (4) : sub = "int32_t "; break;
+                    case (8) : sub = "int64_t "; break;
+                }
+            } else if (ASRUtils::is_real(*return_var->m_type)) {
+                bool is_float = ASR::down_cast<ASR::Real_t>(return_var->m_type)->m_kind == 4;
+                if (is_float) {
+                    sub = "float ";
+                } else {
+                    sub = "double ";
+                }
+            } else if (ASRUtils::is_logical(*return_var->m_type)) {
+                sub = "bool ";
+            } else if (ASRUtils::is_character(*return_var->m_type)) {
+                if (gen_stdstring) {
+                    sub = "std::string ";
+                } else {
+                    sub = "char* ";
+                }
+            } else if (ASRUtils::is_complex(*return_var->m_type)) {
+                bool is_float = ASR::down_cast<ASR::Complex_t>(return_var->m_type)->m_kind == 4;
+                if (is_float) {
+                    if (gen_stdcomplex) {
+                        sub = "std::complex<float> ";
+                    } else {
+                        sub = "float complex ";
+                    }
+                } else {
+                    if (gen_stdcomplex) {
+                        sub = "std::complex<double> ";
+                    } else {
+                        sub = "double complex ";
+                    }
+                }
+            } else if (ASR::is_a<ASR::CPtr_t>(*return_var->m_type)) {
+                sub = "void* ";
+            } else {
+                throw CodeGenError("Return type not supported in function '" +
+                    std::string(x.m_name) +
+                    + "'", return_var->base.base.loc);
+            }
+        } else {
+            sub = "void ";
+        }
         std::string sym_name = x.m_name;
         if (sym_name == "main") {
             sym_name = "_xx_lcompilers_changed_main_xx";
@@ -247,83 +313,7 @@ R"(#include <stdio.h>
         if (sym_name == "exit") {
             sym_name = "_xx_lcompilers_changed_exit_xx";
         }
-        std::string func = "void " + sym_name + "(";
-        for (size_t i=0; i<x.n_args; i++) {
-            ASR::Variable_t *arg = LFortran::ASRUtils::EXPR2VAR(x.m_args[i]);
-            LFORTRAN_ASSERT(ASRUtils::is_arg_dummy(arg->m_intent));
-            if( is_c ) {
-                func += self().convert_variable_decl(*arg, false);
-            } else {
-                func += self().convert_variable_decl(*arg, false, true);
-            }
-            if (i < x.n_args-1) func += ", ";
-        }
-        func += ")";
-        if( is_c || template_for_Kokkos.empty() ) {
-            return func;
-        }
-
-        template_for_Kokkos.pop_back();
-        template_for_Kokkos.pop_back();
-        return "\ntemplate <" + template_for_Kokkos + ">\n" + func;
-    }
-
-    // Returns the declaration, no semi colon at the end
-    std::string get_function_declaration(const ASR::Function_t &x) {
-        template_for_Kokkos.clear();
-        template_number = 0;
-        std::string sub;
-        ASR::Variable_t *return_var = LFortran::ASRUtils::EXPR2VAR(x.m_return_var);
-        if (ASRUtils::is_integer(*return_var->m_type)) {
-            int kind = ASR::down_cast<ASR::Integer_t>(return_var->m_type)->m_kind;
-            switch (kind) {
-                case (1) : sub = "int8_t "; break;
-                case (2) : sub = "int16_t "; break;
-                case (4) : sub = "int32_t "; break;
-                case (8) : sub = "int64_t "; break;
-            }
-        } else if (ASRUtils::is_real(*return_var->m_type)) {
-            bool is_float = ASR::down_cast<ASR::Real_t>(return_var->m_type)->m_kind == 4;
-            if (is_float) {
-                sub = "float ";
-            } else {
-                sub = "double ";
-            }
-        } else if (ASRUtils::is_logical(*return_var->m_type)) {
-            sub = "bool ";
-        } else if (ASRUtils::is_character(*return_var->m_type)) {
-            if (gen_stdstring) {
-                sub = "std::string ";
-            } else {
-                sub = "char* ";
-            }
-        } else if (ASRUtils::is_complex(*return_var->m_type)) {
-            bool is_float = ASR::down_cast<ASR::Complex_t>(return_var->m_type)->m_kind == 4;
-            if (is_float) {
-                if (gen_stdcomplex) {
-                    sub = "std::complex<float> ";
-                } else {
-                    sub = "float complex ";
-                }
-            } else {
-                if (gen_stdcomplex) {
-                    sub = "std::complex<double> ";
-                } else {
-                    sub = "double complex ";
-                }
-            }
-        } else if (ASR::is_a<ASR::CPtr_t>(*return_var->m_type)) {
-            sub = "void* ";
-        } else {
-            throw CodeGenError("Return type not supported in function '" +
-                std::string(x.m_name) +
-                + "'", return_var->base.base.loc);
-        }
-        std::string sym_name = x.m_name;
-        if (sym_name == "main") {
-            sym_name = "_xx_lcompilers_changed_main_xx";
-        }
-        std::string func = sub + sym_name + "(";
+        std::string func = inl + sub + sym_name + "(";
         for (size_t i=0; i<x.n_args; i++) {
             ASR::Variable_t *arg = LFortran::ASRUtils::EXPR2VAR(x.m_args[i]);
             LFORTRAN_ASSERT(LFortran::ASRUtils::is_arg_dummy(arg->m_intent));
@@ -347,62 +337,12 @@ R"(#include <stdio.h>
     std::string declare_all_functions(const SymbolTable &scope) {
         std::string code;
         for (auto &item : scope.get_scope()) {
-            if (ASR::is_a<ASR::Subroutine_t>(*item.second)) {
-                ASR::Subroutine_t *s = ASR::down_cast<ASR::Subroutine_t>(item.second);
-                code += get_subroutine_declaration(*s) + ";\n";
-            }
             if (ASR::is_a<ASR::Function_t>(*item.second)) {
                 ASR::Function_t *s = ASR::down_cast<ASR::Function_t>(item.second);
                 code += get_function_declaration(*s) + ";\n";
             }
         }
         return code;
-    }
-
-    void visit_Subroutine(const ASR::Subroutine_t &x) {
-        indentation_level += 1;
-        std::string sub = get_subroutine_declaration(x);
-        if (x.m_abi == ASR::abiType::BindC
-                && x.m_deftype == ASR::deftypeType::Interface) {
-            sub += ";\n";
-        } else {
-            sub += "\n";
-            for (auto &item : x.m_symtab->get_scope()) {
-                if (ASR::is_a<ASR::Variable_t>(*item.second)) {
-                    ASR::Variable_t *v = ASR::down_cast<ASR::Variable_t>(item.second);
-                    if (v->m_intent == LFortran::ASRUtils::intent_local) {
-                        SymbolInfo s;
-                        s.needs_declaration = true;
-                        sym_info[get_hash((ASR::asr_t*)v)] = s;
-                    }
-                }
-            }
-
-            std::string body;
-            for (size_t i=0; i<x.n_body; i++) {
-                self().visit_stmt(*x.m_body[i]);
-                body += src;
-            }
-
-            std::string decl;
-            for (auto &item : x.m_symtab->get_scope()) {
-                if (ASR::is_a<ASR::Variable_t>(*item.second)) {
-                    ASR::Variable_t *v = ASR::down_cast<ASR::Variable_t>(item.second);
-                    if (v->m_intent == LFortran::ASRUtils::intent_local) {
-                        if (sym_info[get_hash((ASR::asr_t*) v)].needs_declaration) {
-                            std::string indent(indentation_level*indentation_spaces, ' ');
-                            decl += indent;
-                            decl += self().convert_variable_decl(*v) + ";\n";
-                        }
-                    }
-                }
-            }
-
-            sub += "{\n" + decl + body + "}\n";
-        }
-        sub += "\n";
-        src = sub;
-        indentation_level -= 1;
     }
 
     void visit_Function(const ASR::Function_t &x) {
@@ -464,7 +404,7 @@ R"(#include <stdio.h>
                 visited_return = true;
             }
 
-            if(!visited_return) {
+            if (!visited_return && x.m_return_var) {
                 body += indent + "return "
                     + LFortran::ASRUtils::EXPR2VAR(x.m_return_var)->m_name
                     + ";\n";
@@ -642,11 +582,17 @@ R"(#include <stdio.h>
         self().visit_expr(*x.m_arg);
         switch (x.m_kind) {
             case (ASR::cast_kindType::IntegerToReal) : {
-                src = "(float)(" + src + ")";
+                int dest_kind = ASRUtils::extract_kind_from_ttype_t(x.m_type);
+                switch (dest_kind) {
+                    case 4: src = "(float)(" + src + ")"; break;
+                    case 8: src = "(double)(" + src + ")"; break;
+                    default: throw CodeGenError("Cast IntegerToReal: Unsupported Kind " + std::to_string(dest_kind));
+                }
                 break;
             }
             case (ASR::cast_kindType::RealToInteger) : {
-                src = "(int)(" + src + ")";
+                int dest_kind = ASRUtils::extract_kind_from_ttype_t(x.m_type);
+                src = "(int" + std::to_string(dest_kind * 8) + "_t)(" + src + ")";
                 break;
             }
             case (ASR::cast_kindType::RealToReal) : {
@@ -883,6 +829,11 @@ R"(#include <stdio.h>
             case (ASR::binopType::Sub) : { last_expr_precedence = 6; break; }
             case (ASR::binopType::Mul) : { last_expr_precedence = 5; break; }
             case (ASR::binopType::Div) : { last_expr_precedence = 5; break; }
+            case (ASR::binopType::BitAnd) : { last_expr_precedence = 11; break; }
+            case (ASR::binopType::BitOr) : { last_expr_precedence = 13; break; }
+            case (ASR::binopType::BitXor) : { last_expr_precedence = 12; break; }
+            case (ASR::binopType::BitLShift) : { last_expr_precedence = 7; break; }
+            case (ASR::binopType::BitRShift) : { last_expr_precedence = 7; break; }
             case (ASR::binopType::Pow) : {
                 src = "pow(" + left + ", " + right + ")";
                 if (is_c) {
@@ -892,7 +843,7 @@ R"(#include <stdio.h>
                 }
                 return;
             }
-            default: throw CodeGenError("BinOp: operator not implemented yet");
+            default: throw CodeGenError("BinOp: " + std::to_string(x.m_op) + " operator not implemented yet");
         }
         src = "";
         if (left_precedence == 3) {
@@ -1045,7 +996,7 @@ R"(#include <stdio.h>
 
     void visit_Return(const ASR::Return_t & /* x */) {
         std::string indent(indentation_level*indentation_spaces, ' ');
-        if (current_function) {
+        if (current_function && current_function->m_return_var) {
             src = indent + "return "
                 + LFortran::ASRUtils::EXPR2VAR(current_function->m_return_var)->m_name
                 + ";\n";
@@ -1180,7 +1131,7 @@ R"(#include <stdio.h>
 
     void visit_SubroutineCall(const ASR::SubroutineCall_t &x) {
         std::string indent(indentation_level*indentation_spaces, ' ');
-        ASR::Subroutine_t *s = ASR::down_cast<ASR::Subroutine_t>(
+        ASR::Function_t *s = ASR::down_cast<ASR::Function_t>(
             LFortran::ASRUtils::symbol_get_past_external(x.m_name));
         // TODO: use a mapping with a hash(s) instead:
         std::string sym_name = s->m_name;

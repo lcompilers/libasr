@@ -404,8 +404,7 @@ R"(
 
         // Process procedures first:
         for (auto &item : x.m_global_scope->get_scope()) {
-            if (ASR::is_a<ASR::Function_t>(*item.second)
-                || ASR::is_a<ASR::Subroutine_t>(*item.second)) {
+            if (ASR::is_a<ASR::Function_t>(*item.second)) {
                 if( ASRUtils::get_body_size(item.second) != 0 ) {
                     visit_symbol(*item.second);
                     unit_src += src;
@@ -444,11 +443,6 @@ R"(
         // Generate code for nested subroutines and functions first:
         std::string contains;
         for (auto &item : x.m_symtab->get_scope()) {
-            if (ASR::is_a<ASR::Subroutine_t>(*item.second)) {
-                ASR::Subroutine_t *s = ASR::down_cast<ASR::Subroutine_t>(item.second);
-                visit_Subroutine(*s);
-                contains += src;
-            }
             if (ASR::is_a<ASR::Function_t>(*item.second)) {
                 ASR::Function_t *s = ASR::down_cast<ASR::Function_t>(item.second);
                 visit_Function(*s);
@@ -661,8 +655,11 @@ Result<std::string> asr_to_c(Allocator &al, ASR::TranslationUnit_t &asr,
     diag::Diagnostics &diagnostics, Platform &platform,
     int64_t default_lower_bound)
 {
-    pass_unused_functions(al, asr, true);
-    pass_replace_class_constructor(al, asr);
+
+    LCompilers::PassOptions pass_options;
+    pass_options.always_run = true;
+    pass_unused_functions(al, asr, pass_options);
+    pass_replace_class_constructor(al, asr, pass_options);
     ASRToCVisitor v(diagnostics, platform, default_lower_bound);
     try {
         v.visit_asr((ASR::asr_t &)asr);
