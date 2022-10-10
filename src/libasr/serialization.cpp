@@ -113,11 +113,10 @@ public:
             switch (ty) {
                 READ_SYMBOL_CASE(Program)
                 READ_SYMBOL_CASE(Module)
-                READ_SYMBOL_CASE(Subroutine)
                 READ_SYMBOL_CASE(Function)
                 READ_SYMBOL_CASE(GenericProcedure)
                 READ_SYMBOL_CASE(ExternalSymbol)
-                READ_SYMBOL_CASE(DerivedType)
+                READ_SYMBOL_CASE(StructType)
                 READ_SYMBOL_CASE(Variable)
                 READ_SYMBOL_CASE(ClassProcedure)
                 default : throw LCompilersException("Symbol type not supported");
@@ -139,11 +138,10 @@ public:
             switch (sym->type) {
                 INSERT_SYMBOL_CASE(Program)
                 INSERT_SYMBOL_CASE(Module)
-                INSERT_SYMBOL_CASE(Subroutine)
                 INSERT_SYMBOL_CASE(Function)
                 INSERT_SYMBOL_CASE(GenericProcedure)
                 INSERT_SYMBOL_CASE(ExternalSymbol)
-                INSERT_SYMBOL_CASE(DerivedType)
+                INSERT_SYMBOL_CASE(StructType)
                 INSERT_SYMBOL_CASE(Variable)
                 INSERT_SYMBOL_CASE(ClassProcedure)
                 default : throw LCompilersException("Symbol type not supported");
@@ -189,17 +187,6 @@ public:
         current_symtab = parent_symtab;
     }
 
-    void visit_Subroutine(const Subroutine_t &x) {
-        SymbolTable *parent_symtab = current_symtab;
-        current_symtab = x.m_symtab;
-        x.m_symtab->parent = parent_symtab;
-        x.m_symtab->asr_owner = (asr_t*)&x;
-        for (auto &a : x.m_symtab->get_scope()) {
-            this->visit_symbol(*a.second);
-        }
-        current_symtab = parent_symtab;
-    }
-
     void visit_AssociateBlock(const AssociateBlock_t &x) {
         SymbolTable *parent_symtab = current_symtab;
         current_symtab = x.m_symtab;
@@ -233,7 +220,7 @@ public:
         current_symtab = parent_symtab;
     }
 
-    void visit_DerivedType(const DerivedType_t &x) {
+    void visit_StructType(const StructType_t &x) {
         SymbolTable *parent_symtab = current_symtab;
         current_symtab = x.m_symtab;
         x.m_symtab->parent = parent_symtab;
@@ -320,7 +307,12 @@ void fix_external_symbols(ASR::TranslationUnit_t &unit,
 }
 
 ASR::asr_t* deserialize_asr(Allocator &al, const std::string &s,
-        bool load_symtab_id, SymbolTable &external_symtab) {
+        bool load_symtab_id, SymbolTable & /*external_symtab*/) {
+    return deserialize_asr(al, s, load_symtab_id);
+}
+
+ASR::asr_t* deserialize_asr(Allocator &al, const std::string &s,
+        bool load_symtab_id) {
     ASRDeserializationVisitor v(al, s, load_symtab_id);
     ASR::asr_t *node = v.deserialize_node();
     ASR::TranslationUnit_t *tu = ASR::down_cast2<ASR::TranslationUnit_t>(node);
@@ -331,9 +323,6 @@ ASR::asr_t* deserialize_asr(Allocator &al, const std::string &s,
     p.visit_TranslationUnit(*tu);
 
     LFORTRAN_ASSERT(asr_verify(*tu, false));
-
-    // Suppress a warning for now
-    if ((bool&)external_symtab) {}
 
     return node;
 }

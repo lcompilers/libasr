@@ -55,7 +55,7 @@ The algorithm contains two components,
 
 
 */
-class FlipSignVisitor : public PassUtils::SkipOptimizationSubroutineVisitor<FlipSignVisitor>
+class FlipSignVisitor : public PassUtils::SkipOptimizationFunctionVisitor<FlipSignVisitor>
 {
 private:
     ASR::TranslationUnit_t &unit;
@@ -73,7 +73,7 @@ private:
 
 public:
     FlipSignVisitor(Allocator &al_, ASR::TranslationUnit_t &unit_,
-                    const std::string& rl_path_) : SkipOptimizationSubroutineVisitor(al_),
+                    const std::string& rl_path_) : SkipOptimizationFunctionVisitor(al_),
     unit(unit_), rl_path(rl_path_)
     {
         pass_result.reserve(al, 1);
@@ -209,7 +209,8 @@ public:
 };
 
 void pass_replace_flip_sign(Allocator &al, ASR::TranslationUnit_t &unit,
-                            const std::string& rl_path) {
+                            const LCompilers::PassOptions& pass_options) {
+    std::string rl_path = pass_options.runtime_library_dir;
     FlipSignVisitor v(al, unit, rl_path);
     v.visit_TranslationUnit(unit);
     LFORTRAN_ASSERT(asr_verify(unit));

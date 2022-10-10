@@ -22,6 +22,10 @@ namespace LFortran {
         ASR::expr_t* create_array_ref(ASR::symbol_t* arr, Vec<ASR::expr_t*>& idx_vars, Allocator& al,
                                       const Location& loc, ASR::ttype_t* _type);
 
+        void create_vars(Vec<ASR::expr_t*>& vars, int n_vars, const Location& loc,
+                         Allocator& al, SymbolTable*& current_scope, std::string suffix="_k",
+                         ASR::intentType intent=ASR::intentType::Local);
+
         void create_idx_vars(Vec<ASR::expr_t*>& idx_vars, int n_dims, const Location& loc,
                              Allocator& al, SymbolTable*& current_scope, std::string suffix="_k");
 
@@ -67,12 +71,12 @@ namespace LFortran {
         Vec<ASR::stmt_t*> replace_doloop(Allocator &al, const ASR::DoLoop_t &loop,
                                          int comp=-1);
 
-        template <class Derived>
-        class PassVisitor: public ASR::BaseWalkVisitor<Derived> {
+        template <class Struct>
+        class PassVisitor: public ASR::BaseWalkVisitor<Struct> {
 
             private:
 
-                Derived& self() { return static_cast<Derived&>(*this); }
+                Struct& self() { return static_cast<Struct&>(*this); }
 
             public:
 
@@ -130,10 +134,6 @@ namespace LFortran {
 
                     // Transform nested functions and subroutines
                     for (auto &item : x.m_symtab->get_scope()) {
-                        if (ASR::is_a<ASR::Subroutine_t>(*item.second)) {
-                            ASR::Subroutine_t *s = ASR::down_cast<ASR::Subroutine_t>(item.second);
-                            self().visit_Subroutine(*s);
-                        }
                         if (ASR::is_a<ASR::Function_t>(*item.second)) {
                             ASR::Function_t *s = ASR::down_cast<ASR::Function_t>(item.second);
                             self().visit_Function(*s);
@@ -142,15 +142,11 @@ namespace LFortran {
                             ASR::AssociateBlock_t *s = ASR::down_cast<ASR::AssociateBlock_t>(item.second);
                             self().visit_AssociateBlock(*s);
                         }
+                        if (ASR::is_a<ASR::Block_t>(*item.second)) {
+                            ASR::Block_t *s = ASR::down_cast<ASR::Block_t>(item.second);
+                            self().visit_Block(*s);
+                        }
                     }
-                }
-
-                void visit_Subroutine(const ASR::Subroutine_t &x) {
-                    // FIXME: this is a hack, we need to pass in a non-const `x`,
-                    // which requires to generate a TransformVisitor.
-                    ASR::Subroutine_t &xx = const_cast<ASR::Subroutine_t&>(x);
-                    current_scope = xx.m_symtab;
-                    transform_stmts(xx.m_body, xx.n_body);
                 }
 
                 void visit_Function(const ASR::Function_t &x) {
@@ -159,6 +155,13 @@ namespace LFortran {
                     ASR::Function_t &xx = const_cast<ASR::Function_t&>(x);
                     current_scope = xx.m_symtab;
                     transform_stmts(xx.m_body, xx.n_body);
+
+                    for (auto &item : x.m_symtab->get_scope()) {
+                        if (ASR::is_a<ASR::Block_t>(*item.second)) {
+                            ASR::Block_t *s = ASR::down_cast<ASR::Block_t>(item.second);
+                            self().visit_Block(*s);
+                        }
+                    }
                 }
 
                 void visit_AssociateBlock(const ASR::AssociateBlock_t& x) {
@@ -167,38 +170,31 @@ namespace LFortran {
                     transform_stmts(xx.m_body, xx.n_body);
                 }
 
-        };
+                void visit_Block(const ASR::Block_t& x) {
+                    ASR::Block_t &xx = const_cast<ASR::Block_t&>(x);
+                    current_scope = xx.m_symtab;
+                    transform_stmts(xx.m_body, xx.n_body);
 
-        template <class Derived>
-        class SkipOptimizationSubroutineVisitor: public PassVisitor<Derived> {
-
-            public:
-
-                SkipOptimizationSubroutineVisitor(Allocator& al_): PassVisitor<Derived>(al_, nullptr) {
-                }
-
-                void visit_Subroutine(const ASR::Subroutine_t &x) {
-                    if( ASRUtils::is_intrinsic_optimization<ASR::Subroutine_t>(&x) ) {
-                        return ;
+                    for (auto &item : x.m_symtab->get_scope()) {
+                        self().visit_symbol(*item.second);
                     }
-                    PassUtils::PassVisitor<Derived>::visit_Subroutine(x);
                 }
 
         };
 
-        template <class Derived>
-        class SkipOptimizationFunctionVisitor: public PassVisitor<Derived> {
+        template <class Struct>
+        class SkipOptimizationFunctionVisitor: public PassVisitor<Struct> {
 
             public:
 
-                SkipOptimizationFunctionVisitor(Allocator& al_): PassVisitor<Derived>(al_, nullptr) {
+                SkipOptimizationFunctionVisitor(Allocator& al_): PassVisitor<Struct>(al_, nullptr) {
                 }
 
                 void visit_Function(const ASR::Function_t &x) {
                     if( ASRUtils::is_intrinsic_optimization<ASR::Function_t>(&x) ) {
                         return ;
                     }
-                    PassUtils::PassVisitor<Derived>::visit_Function(x);
+                    PassUtils::PassVisitor<Struct>::visit_Function(x);
                 }
 
         };
