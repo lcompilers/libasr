@@ -30,8 +30,8 @@ namespace LFortran {
                     m_dims = x_type_ref->m_dims;
                     break;
                 }
-                case ASR::ttypeType::Derived: {
-                    ASR::Derived_t* x_type_ref = ASR::down_cast<ASR::Derived_t>(t2);
+                case ASR::ttypeType::Struct: {
+                    ASR::Struct_t* x_type_ref = ASR::down_cast<ASR::Struct_t>(t2);
                     n_dims = x_type_ref->n_dims;
                     m_dims = x_type_ref->m_dims;
                     break;
@@ -91,10 +91,10 @@ namespace LFortran {
                     }
                     break;
                 }
-                case ASR::ttypeType::Derived: {
-                    ASR::Derived_t* x_type_ref = ASR::down_cast<ASR::Derived_t>(t2);
+                case ASR::ttypeType::Struct: {
+                    ASR::Struct_t* x_type_ref = ASR::down_cast<ASR::Struct_t>(t2);
                     if( create_new ) {
-                        new_type = LFortran::ASRUtils::TYPE(ASR::make_Derived_t(*al, x_type->base.loc, x_type_ref->m_derived_type,
+                        new_type = LFortran::ASRUtils::TYPE(ASR::make_Struct_t(*al, x_type->base.loc, x_type_ref->m_derived_type,
                                                             m_dims, n_dims));
                     } else {
                         x_type_ref->n_dims = n_dims;
@@ -199,29 +199,45 @@ namespace LFortran {
             return array_ref;
         }
 
-        void create_idx_vars(Vec<ASR::expr_t*>& idx_vars, int n_dims, const Location& loc, Allocator& al,
-                             SymbolTable*& current_scope, std::string suffix) {
-            idx_vars.reserve(al, n_dims);
-            for( int i = 1; i <= n_dims; i++ ) {
-                Str str_name;
-                str_name.from_str(al, std::to_string(i) + suffix);
-                const char* const_idx_var_name = str_name.c_str(al);
-                char* idx_var_name = (char*)const_idx_var_name;
-                ASR::expr_t* idx_var = nullptr;
+        void create_vars(Vec<ASR::expr_t*>& vars, int n_vars, const Location& loc,
+                         Allocator& al, SymbolTable*& current_scope, std::string suffix,
+                         ASR::intentType intent) {
+            vars.reserve(al, n_vars);
+            for (int i = 1; i <= n_vars; i++) {
+                std::string idx_var_name = "__" + std::to_string(i) + suffix;
                 ASR::ttype_t* int32_type = LFortran::ASRUtils::TYPE(ASR::make_Integer_t(al, loc, 4, nullptr, 0));
-                if( current_scope->get_symbol(std::string(idx_var_name)) == nullptr ) {
-                    ASR::asr_t* idx_sym = ASR::make_Variable_t(al, loc, current_scope, idx_var_name,
-                                                            ASR::intentType::Local, nullptr, nullptr, ASR::storage_typeType::Default,
+                if( current_scope->get_symbol(idx_var_name) != nullptr ) {
+                    ASR::symbol_t* idx_sym = current_scope->get_symbol(idx_var_name);
+                    if( ASR::is_a<ASR::Variable_t>(*idx_sym) ) {
+                        ASR::Variable_t* idx_var = ASR::down_cast<ASR::Variable_t>(idx_sym);
+                        if( !(ASRUtils::check_equal_type(idx_var->m_type, int32_type) &&
+                              idx_var->m_symbolic_value == nullptr) ) {
+                            idx_var_name = current_scope->get_unique_name(idx_var_name);
+                        }
+                    } else {
+                        idx_var_name = current_scope->get_unique_name(idx_var_name);
+                    }
+                }
+                char* var_name = s2c(al, idx_var_name);;
+                ASR::expr_t* var = nullptr;
+                if( current_scope->get_symbol(idx_var_name) == nullptr ) {
+                    ASR::asr_t* idx_sym = ASR::make_Variable_t(al, loc, current_scope, var_name,
+                                                            intent, nullptr, nullptr, ASR::storage_typeType::Default,
                                                             int32_type, ASR::abiType::Source, ASR::accessType::Public,
                                                             ASR::presenceType::Required, false);
-                    current_scope->add_symbol(std::string(idx_var_name), ASR::down_cast<ASR::symbol_t>(idx_sym));
-                    idx_var = LFortran::ASRUtils::EXPR(ASR::make_Var_t(al, loc, ASR::down_cast<ASR::symbol_t>(idx_sym)));
+                    current_scope->add_symbol(idx_var_name, ASR::down_cast<ASR::symbol_t>(idx_sym));
+                    var = LFortran::ASRUtils::EXPR(ASR::make_Var_t(al, loc, ASR::down_cast<ASR::symbol_t>(idx_sym)));
                 } else {
-                    ASR::symbol_t* idx_sym = current_scope->get_symbol(std::string(idx_var_name));
-                    idx_var = LFortran::ASRUtils::EXPR(ASR::make_Var_t(al, loc, idx_sym));
+                    ASR::symbol_t* idx_sym = current_scope->get_symbol(idx_var_name);
+                    var = LFortran::ASRUtils::EXPR(ASR::make_Var_t(al, loc, idx_sym));
                 }
-                idx_vars.push_back(al, idx_var);
+                vars.push_back(al, var);
             }
+        }
+
+        void create_idx_vars(Vec<ASR::expr_t*>& idx_vars, int n_dims, const Location& loc,
+                             Allocator& al, SymbolTable*& current_scope, std::string suffix) {
+            create_vars(idx_vars, n_dims, loc, al, current_scope, suffix);
         }
 
         ASR::symbol_t* import_generic_procedure(std::string func_name, std::string module_name,
@@ -526,10 +542,15 @@ namespace LFortran {
             for( size_t i = 0; i < fallback_while_loop.size(); i++ ) {
                 body.push_back(al, fallback_while_loop[i]);
             }
-            ASR::asr_t* vector_copy_asr = ASR::make_Subroutine_t(al, unit.base.base.loc, vector_copy_symtab,
-                                            s2c(al, vector_copy_name), arg_exprs.p, arg_exprs.size(), body.p,
-                                            body.size(), ASR::abiType::Source, ASR::accessType::Public, ASR::deftypeType::Implementation,
-                                            nullptr, false, false);
+            ASR::asr_t* vector_copy_asr = ASR::make_Function_t(al,
+                unit.base.base.loc,
+                vector_copy_symtab,
+                s2c(al, vector_copy_name), arg_exprs.p, arg_exprs.size(),
+                /* nullptr, 0, */ body.p, body.size(), nullptr,
+                ASR::abiType::Source, ASR::accessType::Public,
+                ASR::deftypeType::Implementation,
+                nullptr, false, false, false, false, false,
+                nullptr, 0, nullptr, 0, false);
             global_scope->add_symbol(vector_copy_name, ASR::down_cast<ASR::symbol_t>(vector_copy_asr));
             return ASR::down_cast<ASR::symbol_t>(vector_copy_asr);
         }
