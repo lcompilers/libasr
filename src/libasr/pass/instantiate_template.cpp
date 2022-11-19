@@ -10,24 +10,26 @@ namespace LFortran {
 class FunctionInstantiator : public ASR::BaseExprStmtDuplicator<FunctionInstantiator>
 {
 public:
+    SymbolTable *func_scope;
     SymbolTable *current_scope;
     std::map<std::string, ASR::ttype_t*> subs;
     std::map<std::string, ASR::symbol_t*> rt_subs;
     std::string new_func_name;
     std::vector<ASR::Function_t*> rts;
+    std::set<std::string> dependencies;
 
     FunctionInstantiator(Allocator &al, std::map<std::string, ASR::ttype_t*> subs,
-            std::map<std::string, ASR::symbol_t*> rt_subs, SymbolTable *current_scope,
+            std::map<std::string, ASR::symbol_t*> rt_subs, SymbolTable *func_scope,
             std::string new_func_name):
         BaseExprStmtDuplicator(al),
-        current_scope{current_scope},
+        func_scope{func_scope},
         subs{subs},
         rt_subs{rt_subs},
         new_func_name{new_func_name}
         {}
 
     ASR::asr_t* instantiate_Function(ASR::Function_t *x) {
-        SymbolTable *parent_scope = current_scope;
+        dependencies.clear();
         current_scope = al.make_new<SymbolTable>(x->m_symtab->parent);
 
         Vec<ASR::expr_t*> args;
@@ -114,9 +116,16 @@ public:
         bool func_pure = x->m_pure;
         bool func_module = x->m_module;
 
+        Vec<char*> deps_vec;
+        deps_vec.reserve(al, dependencies.size());
+        for( auto& dep: dependencies ) {
+            deps_vec.push_back(al, s2c(al, dep));
+        }
+
         ASR::asr_t *result = ASR::make_Function_t(
             al, x->base.base.loc,
             current_scope, s2c(al, new_func_name),
+            deps_vec.p, deps_vec.size(),
             args.p, args.size(),
             body.p, body.size(),
             new_return_var_ref,
@@ -126,7 +135,6 @@ public:
 
         ASR::symbol_t *t = ASR::down_cast<ASR::symbol_t>(result);
         x->m_symtab->parent->add_symbol(new_func_name, t);
-        current_scope = parent_scope;
 
         return result;
     }
@@ -149,7 +157,7 @@ public:
 
         ASR::ttype_t *type = substitute_type(x->m_type);
 
-        return ASR::make_ArrayItem_t(al, x->base.base.loc, m_v, args.p, x->n_args, type, m_value);
+        return ASR::make_ArrayItem_t(al, x->base.base.loc, m_v, args.p, x->n_args, type, ASR::arraystorageType::RowMajor, m_value);
     }
 
     ASR::asr_t* duplicate_ListItem(ASR::ListItem_t *x) {
@@ -188,6 +196,12 @@ public:
         return ASR::make_Assignment_t(al, x->base.base.loc, target, value, overloaded);
     }
 
+    ASR::asr_t* duplicate_TemplateBinOp(ASR::TemplateBinOp_t *x) {
+        ASR::expr_t *left = duplicate_expr(x->m_left);
+        ASR::expr_t *right = duplicate_expr(x->m_right);
+        return make_BinOp_helper(left, right, x->m_op, x->base.base.loc);
+    }
+
     ASR::asr_t* duplicate_DoLoop(ASR::DoLoop_t *x) {
         Vec<ASR::stmt_t*> m_body;
         m_body.reserve(al, x->n_body);
@@ -214,7 +228,7 @@ public:
 
     ASR::asr_t* duplicate_FunctionCall(ASR::FunctionCall_t *x) {
         std::string sym_name = ASRUtils::symbol_name(x->m_name);
-        ASR::symbol_t *name = current_scope->get_symbol(sym_name);
+        ASR::symbol_t *name = func_scope->get_symbol(sym_name);
         Vec<ASR::call_arg_t> args;
         args.reserve(al, x->n_args);
         for (size_t i=0; i<x->n_args; i++) {
@@ -227,8 +241,8 @@ public:
         ASR::expr_t* value = duplicate_expr(x->m_value);
         ASR::expr_t* dt = duplicate_expr(x->m_dt);
         std::string call_name = ASRUtils::symbol_name(x->m_name);
-        for (ASR::Function_t* rt: rts) {
-            if (call_name.compare(rt->m_name) == 0) {
+        //for (ASR::Function_t* rt: rts) {
+        //    if (call_name.compare(rt->m_name) == 0) {
                 if (rt_subs.find(call_name) == rt_subs.end()) {
                     if (call_name.compare("add") == 0) {
                         ASR::expr_t* left_arg = duplicate_expr(x->m_args[0].m_value);
@@ -257,8 +271,10 @@ public:
                     LFORTRAN_ASSERT(false); // should never happen
                 }
                 name = rt_subs[call_name];
-            }
-        }
+        //    }
+        //}
+        // TODO: Nested generic function call
+        dependencies.insert(std::string(ASRUtils::symbol_name(name)));
         return ASR::make_FunctionCall_t(al, x->base.base.loc, name, x->m_original_name,
             args.p, args.size(), type, value, dt);
     }
@@ -391,6 +407,7 @@ public:
         }
         return right;
     }
+
 };
 
 ASR::symbol_t* pass_instantiate_generic_function(Allocator &al, std::map<std::string, ASR::ttype_t*> subs,
