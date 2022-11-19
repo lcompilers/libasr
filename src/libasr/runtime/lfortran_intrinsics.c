@@ -56,6 +56,15 @@ LFORTRAN_API void _lfortran_printf(const char* format, ...)
     va_end(args);
 }
 
+LFORTRAN_API void _lcompilers_print_error(const char* format, ...)
+{
+    va_list args;
+    va_start(args, format);
+    vfprintf(stderr, format, args);
+    fflush(stderr);
+    va_end(args);
+}
+
 LFORTRAN_API void _lfortran_complex_add_32(struct _lfortran_complex_32* a,
         struct _lfortran_complex_32* b, struct _lfortran_complex_32 *result)
 {
@@ -864,6 +873,11 @@ LFORTRAN_API int _lfortran_str_ord(char** s)
     return (*s)[0];
 }
 
+LFORTRAN_API int _lfortran_str_ord_c(char* s)
+{
+    return s[0];
+}
+
 LFORTRAN_API char* _lfortran_str_chr(int val)
 {
     char* dest_char = (char*)malloc(2);
@@ -1063,7 +1077,7 @@ LFORTRAN_API void _lfortran_cpu_time(double *t) {
 
 LFORTRAN_API void _lfortran_i32sys_clock(
         int32_t *count, int32_t *rate, int32_t *max) {
-#ifdef _MSC_VER
+#if defined(_MSC_VER) || defined(__MACH__)
         *count = - INT_MAX;
         *rate = 0;
         *max = 0;
@@ -1083,7 +1097,7 @@ LFORTRAN_API void _lfortran_i32sys_clock(
 
 LFORTRAN_API void _lfortran_i64sys_clock(
         uint64_t *count, int64_t *rate, int64_t *max) {
-#ifdef _MSC_VER
+#if defined(_MSC_VER) || defined(__MACH__)
         *count = - INT_MAX;
         *rate = 0;
         *max = 0;
