@@ -39,6 +39,7 @@
 #include <libasr/pass/update_array_dim_intrinsic_calls.h>
 #include <libasr/pass/pass_array_by_data.h>
 #include <libasr/pass/pass_list_expr.h>
+#include <libasr/pass/pass_compare.h>
 #include <libasr/pass/subroutine_from_function.h>
 #include <libasr/asr_verify.h>
 
@@ -79,7 +80,8 @@ namespace LCompilers {
             {"array_dim_intrinsics_update", &LFortran::pass_update_array_dim_intrinsic_calls},
             {"pass_list_expr", &LFortran::pass_list_expr},
             {"pass_array_by_data", &LFortran::pass_array_by_data},
-            {"subroutine_from_function", &LFortran::pass_create_subroutine_from_function}
+            {"subroutine_from_function", &LFortran::pass_create_subroutine_from_function},
+            {"pass_compare", &LFortran::pass_compare}
         };
 
         bool is_fast;
@@ -96,7 +98,12 @@ namespace LCompilers {
                 // it
                 if (rtlib && passes[i] == "unused_functions") continue;
                 _passes_db[passes[i]](al, *asr, pass_options);
-                LFORTRAN_ASSERT(LFortran::asr_verify(*asr, true, diagnostics));
+            #if defined(WITH_LFORTRAN_ASSERT)
+                if (!LFortran::asr_verify(*asr, true, diagnostics)) {
+                    std::cerr << diagnostics.render2();
+                    throw LFortran::LCompilersException("Verify failed");
+                };
+            #endif
             }
         }
 

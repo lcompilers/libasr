@@ -191,6 +191,39 @@ namespace LFortran {
                     transform_stmts(xx.m_body, xx.n_body);
                 }
 
+                void visit_If(const ASR::If_t& x) {
+                    ASR::If_t &xx = const_cast<ASR::If_t&>(x);
+                    self().visit_expr(*xx.m_test);
+                    transform_stmts(xx.m_body, xx.n_body);
+                    transform_stmts(xx.m_orelse, xx.n_orelse);
+                }
+
+                void visit_CaseStmt(const ASR::CaseStmt_t& x) {
+                    ASR::CaseStmt_t &xx = const_cast<ASR::CaseStmt_t&>(x);
+                    for (size_t i=0; i<xx.n_test; i++) {
+                        self().visit_expr(*xx.m_test[i]);
+                    }
+                    transform_stmts(xx.m_body, xx.n_body);
+                }
+
+                void visit_CaseStmt_Range(const ASR::CaseStmt_Range_t& x) {
+                    ASR::CaseStmt_Range_t &xx = const_cast<ASR::CaseStmt_Range_t&>(x);
+                    if (xx.m_start)
+                        self().visit_expr(*xx.m_start);
+                    if (xx.m_end)
+                        self().visit_expr(*xx.m_end);
+                    transform_stmts(xx.m_body, xx.n_body);
+                }
+
+                void visit_Select(const ASR::Select_t& x) {
+                    ASR::Select_t &xx = const_cast<ASR::Select_t&>(x);
+                    self().visit_expr(*xx.m_test);
+                    for (size_t i=0; i<xx.n_body; i++) {
+                        self().visit_case_stmt(*xx.m_body[i]);
+                    }
+                    transform_stmts(xx.m_default, xx.n_default);
+                }
+
         };
 
         template <class Struct>
@@ -216,15 +249,18 @@ namespace LFortran {
 
                 Vec<char*> function_dependencies;
                 Vec<char*> module_dependencies;
+                Vec<char*> variable_dependencies;
                 Allocator& al;
                 bool fill_function_dependencies;
                 bool fill_module_dependencies;
+                bool fill_variable_dependencies;
 
             public:
 
                 UpdateDependenciesVisitor(Allocator &al_)
                 : al(al_), fill_function_dependencies(false),
-                fill_module_dependencies(false)
+                fill_module_dependencies(false),
+                fill_variable_dependencies(false)
                 {}
 
                 void visit_Function(const ASR::Function_t& x) {
@@ -234,11 +270,6 @@ namespace LFortran {
                     bool fill_function_dependencies_copy = fill_function_dependencies;
                     fill_function_dependencies = true;
                     BaseWalkVisitor<UpdateDependenciesVisitor>::visit_Function(x);
-                    // std::cout<<"dependencies of "<<x.m_name<<" {";
-                    // for( size_t i = 0; i < dependencies.size(); i++ ) {
-                    //     std::cout<<dependencies[i]<<", ";
-                    // }
-                    // std::cout<<"}"<<std::endl;
                     xx.m_dependencies = function_dependencies.p;
                     xx.n_dependencies = function_dependencies.size();
                     fill_function_dependencies = fill_function_dependencies_copy;
@@ -247,13 +278,36 @@ namespace LFortran {
                 void visit_Module(const ASR::Module_t& x) {
                     ASR::Module_t& xx = const_cast<ASR::Module_t&>(x);
                     module_dependencies.n = 0;
-                    module_dependencies.from_pointer_n_copy(al, xx.m_dependencies, xx.n_dependencies);
+                    module_dependencies.reserve(al, 1);
                     bool fill_module_dependencies_copy = fill_module_dependencies;
                     fill_module_dependencies = true;
                     BaseWalkVisitor<UpdateDependenciesVisitor>::visit_Module(x);
+                    for( size_t i = 0; i < xx.n_dependencies; i++ ) {
+                        if( !present(module_dependencies, xx.m_dependencies[i]) ) {
+                            module_dependencies.push_back(al, xx.m_dependencies[i]);
+                        }
+                    }
                     xx.n_dependencies = module_dependencies.size();
                     xx.m_dependencies = module_dependencies.p;
                     fill_module_dependencies = fill_module_dependencies_copy;
+                }
+
+                void visit_Variable(const ASR::Variable_t& x) {
+                    ASR::Variable_t& xx = const_cast<ASR::Variable_t&>(x);
+                    variable_dependencies.n = 0;
+                    variable_dependencies.reserve(al, 1);
+                    bool fill_variable_dependencies_copy = fill_variable_dependencies;
+                    fill_variable_dependencies = true;
+                    BaseWalkVisitor<UpdateDependenciesVisitor>::visit_Variable(x);
+                    xx.n_dependencies = variable_dependencies.size();
+                    xx.m_dependencies = variable_dependencies.p;
+                    fill_variable_dependencies = fill_variable_dependencies_copy;
+                }
+
+                void visit_Var(const ASR::Var_t& x) {
+                    if( fill_variable_dependencies ) {
+                        variable_dependencies.push_back(al, ASRUtils::symbol_name(x.m_v));
+                    }
                 }
 
                 void visit_FunctionCall(const ASR::FunctionCall_t& x) {

@@ -164,7 +164,7 @@ class ASRToWASMVisitor : public ASR::BaseVisitor<ASRToWASMVisitor> {
             auto type = get_import_func_var_type(param);
             auto variable = ASR::make_Variable_t(
                 m_al, global_scope_loc, nullptr,
-                s2c(m_al, std::to_string(var_idx)), ASR::intentType::In,
+                s2c(m_al, std::to_string(var_idx)), nullptr, 0, ASR::intentType::In,
                 nullptr, nullptr, ASR::storage_typeType::Default,
                 ASRUtils::TYPE(type), ASR::abiType::Source,
                 ASR::accessType::Public, ASR::presenceType::Required, false);
@@ -547,7 +547,8 @@ class ASRToWASMVisitor : public ASR::BaseVisitor<ASRToWASMVisitor> {
             m_var_name_idx_map[get_hash((ASR::asr_t *)arg)] =
                 s->no_of_variables++;
             if (arg->m_intent == ASR::intentType::Out ||
-                arg->m_intent == ASR::intentType::InOut) {
+                arg->m_intent == ASR::intentType::InOut ||
+                arg->m_intent == ASR::intentType::Unspecified) {
                 s->referenced_vars.push_back(m_al, arg);
             }
         }
@@ -564,7 +565,8 @@ class ASRToWASMVisitor : public ASR::BaseVisitor<ASRToWASMVisitor> {
             for (size_t i = 0; i < x.n_args; i++) {
                 ASR::Variable_t *arg = ASRUtils::EXPR2VAR(x.m_args[i]);
                 if (arg->m_intent == ASR::intentType::Out ||
-                    arg->m_intent == ASR::intentType::InOut) {
+                    arg->m_intent == ASR::intentType::InOut ||
+                    arg->m_intent == ASR::intentType::Unspecified) {
                     emit_var_type(m_type_section, arg);
                 }
             }
@@ -1624,14 +1626,15 @@ class ASRToWASMVisitor : public ASR::BaseVisitor<ASRToWASMVisitor> {
         //     sym_name = "_xx_lcompilers_changed_exit_xx";
         // }
 
-        Vec<ASR::Variable_t *> intent_out_passed_vars;
-        intent_out_passed_vars.reserve(m_al, s->n_args);
+        Vec<ASR::expr_t *> vars_passed_by_refs;
+        vars_passed_by_refs.reserve(m_al, s->n_args);
         if (x.n_args == s->n_args) {
             for (size_t i = 0; i < x.n_args; i++) {
                 ASR::Variable_t *arg = ASRUtils::EXPR2VAR(s->m_args[i]);
-                if (arg->m_intent == ASRUtils::intent_out) {
-                    intent_out_passed_vars.push_back(
-                        m_al, ASRUtils::EXPR2VAR(x.m_args[i].m_value));
+                if (arg->m_intent == ASRUtils::intent_out ||
+                    arg->m_intent == ASRUtils::intent_inout ||
+                    arg->m_intent == ASRUtils::intent_unspecified) {
+                    vars_passed_by_refs.push_back(m_al, x.m_args[i].m_value);
                 }
                 visit_expr(*x.m_args[i].m_value);
             }
@@ -1645,13 +1648,24 @@ class ASRToWASMVisitor : public ASR::BaseVisitor<ASRToWASMVisitor> {
                         m_func_name_idx_map.end())
         wasm::emit_call(m_code_section, m_al,
                         m_func_name_idx_map[get_hash((ASR::asr_t *)s)]->index);
-        for (auto return_var : intent_out_passed_vars) {
-            LFORTRAN_ASSERT(
+        for (auto return_expr : vars_passed_by_refs) {
+            if (ASR::is_a<ASR::Var_t>(*return_expr)) {
+                auto return_var = ASRUtils::EXPR2VAR(return_expr);
+                LFORTRAN_ASSERT(
                 m_var_name_idx_map.find(get_hash((ASR::asr_t *)return_var)) !=
                 m_var_name_idx_map.end());
-            wasm::emit_set_local(
-                m_code_section, m_al,
-                m_var_name_idx_map[get_hash((ASR::asr_t *)return_var)]);
+                wasm::emit_set_local(
+                    m_code_section, m_al,
+                    m_var_name_idx_map[get_hash((ASR::asr_t *)return_var)]);
+            } else if (ASR::is_a<ASR::ArrayItem_t>(*return_expr)) {
+                // emit_memory_store(ASRUtils::EXPR(return_var));
+
+                throw CodeGenError(
+                    "Passing array elements as arguments (with intent out, "
+                    "inout, unspecified) to Subroutines is not yet supported");
+            } else {
+                LFORTRAN_ASSERT(false);
+            }
         }
     }
 
@@ -1733,9 +1747,9 @@ class ASRToWASMVisitor : public ASR::BaseVisitor<ASRToWASMVisitor> {
                         wasm::emit_i32_eqz(m_code_section, m_al);
                         wasm::emit_i32_eqz(m_code_section, m_al);
                     } else if (arg_kind == 8 && dest_kind == 4) {
-                        wasm::emit_i32_eqz(m_code_section, m_al);
-                        wasm::emit_i32_eqz(m_code_section, m_al);
-                        wasm::emit_i64_extend_i32_s(m_code_section, m_al);
+                        wasm::emit_i64_eqz(m_code_section, m_al);
+                        wasm::emit_i64_eqz(m_code_section, m_al);
+                        wasm::emit_i32_wrap_i64(m_code_section, m_al);
                     } else {
                         std::string msg = "Conversion from kinds " +
                                           std::to_string(arg_kind) + " to " +
@@ -2102,9 +2116,9 @@ class ASRToWASMVisitor : public ASR::BaseVisitor<ASRToWASMVisitor> {
 
     void visit_Assert(const ASR::Assert_t &x) {
         this->visit_expr(*x.m_test);
-        wasm::emit_i32_eqz(m_code_section, m_al);
         wasm::emit_b8(m_code_section, m_al, 0x04);  // emit if start
         wasm::emit_b8(m_code_section, m_al, 0x40);  // empty block type
+        wasm::emit_b8(m_code_section, m_al, 0x05);  // starting of else
         if (x.m_msg) {
             std::string msg =
                 ASR::down_cast<ASR::StringConstant_t>(x.m_msg)->m_s;
@@ -2114,7 +2128,6 @@ class ASRToWASMVisitor : public ASR::BaseVisitor<ASRToWASMVisitor> {
         }
         wasm::emit_i32_const(m_code_section, m_al, 1);  // non-zero exit code
         exit();
-        wasm::emit_b8(m_code_section, m_al, 0x05);  // starting of else
         wasm::emit_expr_end(m_code_section, m_al);  // emit if end
     }
 };
