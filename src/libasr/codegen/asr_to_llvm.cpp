@@ -56,7 +56,7 @@
 #endif
 
 
-namespace LFortran {
+namespace LCompilers {
 
 namespace {
 
@@ -98,14 +98,14 @@ using ASR::is_a;
 using ASR::down_cast;
 using ASR::down_cast2;
 
-using LFortran::ASRUtils::expr_type;
-using LFortran::ASRUtils::symbol_get_past_external;
-using LFortran::ASRUtils::EXPR2VAR;
-using LFortran::ASRUtils::EXPR2FUN;
-using LFortran::ASRUtils::intent_local;
-using LFortran::ASRUtils::intent_return_var;
-using LFortran::ASRUtils::determine_module_dependencies;
-using LFortran::ASRUtils::is_arg_dummy;
+using ASRUtils::expr_type;
+using ASRUtils::symbol_get_past_external;
+using ASRUtils::EXPR2VAR;
+using ASRUtils::EXPR2FUN;
+using ASRUtils::intent_local;
+using ASRUtils::intent_return_var;
+using ASRUtils::determine_module_dependencies;
+using ASRUtils::is_arg_dummy;
 
 // Platform dependent fast unique hash:
 uint64_t static get_hash(ASR::asr_t *node)
@@ -164,7 +164,7 @@ public:
     Allocator &al;
 
     llvm::Value *tmp;
-    llvm::BasicBlock *current_loophead, *current_loopend, *proc_return;
+    llvm::BasicBlock *current_loophead, *current_loopend, *proc_return, *block_end_label;
     std::string mangle_prefix;
     bool prototype_only;
     llvm::StructType *complex_type_4, *complex_type_8;
@@ -229,6 +229,7 @@ public:
     int64_t ptr_loads;
     bool lookup_enum_value_for_nonints;
     bool is_assignment_target;
+    bool in_block = false;
 
     CompilerOptions &compiler_options;
 
@@ -268,12 +269,12 @@ public:
     }
 
     llvm::Value* CreateLoad(llvm::Value *x) {
-        return LFortran::LLVM::CreateLoad(*builder, x);
+        return LLVM::CreateLoad(*builder, x);
     }
 
 
     llvm::Value* CreateGEP(llvm::Value *x, std::vector<llvm::Value *> &idx) {
-        return LFortran::LLVM::CreateGEP(*builder, x, idx);
+        return LLVM::CreateGEP(*builder, x, idx);
     }
 
     // Inserts a new block `bb` using the current builder
@@ -296,6 +297,9 @@ public:
     // things, it might be more readable to just use the LLVM API
     // without any extra layer on top. In some other cases, it might
     // be more readable to use this abstraction.
+    // The `if_block` and `else_block` must generate one or more blocks. In
+    // addition, the `if_block` must not be terminated, we terminate it
+    // ourselves. The `else_block` can be either terminated or not.
     template <typename IF, typename ELSE>
     void create_if_else(llvm::Value * cond, IF if_block, ELSE else_block) {
         llvm::Function *fn = builder->GetInsertBlock()->getParent();
@@ -378,7 +382,7 @@ public:
         LocationManager::FileLocations fl;
         fl.in_filename = infile;
         lm.files.push_back(fl);
-        std::string input = LFortran::read_file(infile);
+        std::string input = read_file(infile);
         lm.init_simple(input);
         lm.file_ends.push_back(input.size());
         lm.pos_to_linecol(lm.output_to_input_pos(loc_first, false),
@@ -1196,7 +1200,7 @@ public:
 
         // All loose statements must be converted to a function, so the items
         // must be empty:
-        LFORTRAN_ASSERT(x.n_items == 0);
+        LCOMPILERS_ASSERT(x.n_items == 0);
 
         // Define LLVM types that we might need
         // Complex type is represented as an identified struct in LLVM
@@ -1250,20 +1254,20 @@ public:
         // Generate function prototypes
         for (auto &item : x.m_global_scope->get_scope()) {
             if (is_a<ASR::Function_t>(*item.second)) {
-                if (ASR::down_cast<ASR::Function_t>(item.second)->n_type_params == 0) {
+                if (ASRUtils::get_FunctionType(ASR::down_cast<ASR::Function_t>(item.second))->n_type_params == 0) {
                     visit_Function(*ASR::down_cast<ASR::Function_t>(item.second));
                 }
             }
         }
         prototype_only = false;
 
-        // TODO: handle depencencies across modules and main program
+        // TODO: handle dependencies across modules and main program
 
         // Then do all the modules in the right order
         std::vector<std::string> build_order
             = determine_module_dependencies(x);
         for (auto &item : build_order) {
-            LFORTRAN_ASSERT(x.m_global_scope->get_symbol(item)
+            LCOMPILERS_ASSERT(x.m_global_scope->get_symbol(item)
                 != nullptr);
             ASR::symbol_t *mod = x.m_global_scope->get_symbol(item);
             visit_symbol(*mod);
@@ -1272,7 +1276,7 @@ public:
         // Then do all the procedures
         for (auto &item : x.m_global_scope->get_scope()) {
             if (is_a<ASR::Function_t>(*item.second)) {
-                if (ASR::down_cast<ASR::Function_t>(item.second)->n_type_params == 0) {
+                if (ASRUtils::get_FunctionType(ASR::down_cast<ASR::Function_t>(item.second))->n_type_params == 0) {
                     visit_symbol(*item.second);
                 }
             }
@@ -1289,10 +1293,20 @@ public:
     void visit_Allocate(const ASR::Allocate_t& x) {
         for( size_t i = 0; i < x.n_args; i++ ) {
             ASR::alloc_arg_t curr_arg = x.m_args[i];
-            std::uint32_t h = get_hash((ASR::asr_t*)curr_arg.m_a);
-            LFORTRAN_ASSERT(llvm_symtab.find(h) != llvm_symtab.end());
+            ASR::symbol_t* tmp_sym = nullptr;
+            ASR::expr_t* tmp_expr = x.m_args[i].m_a;
+            if( ASR::is_a<ASR::Var_t>(*tmp_expr) ) {
+                const ASR::Var_t* tmp_var = ASR::down_cast<ASR::Var_t>(tmp_expr);
+                tmp_sym = tmp_var->m_v;
+            } else {
+                throw CodeGenError("Cannot deallocate variables in expression " +
+                                    std::to_string(tmp_expr->type),
+                                    tmp_expr->base.loc);
+            }
+            std::uint32_t h = get_hash((ASR::asr_t*)tmp_sym);
+            LCOMPILERS_ASSERT(llvm_symtab.find(h) != llvm_symtab.end());
             llvm::Value* x_arr = llvm_symtab[h];
-            ASR::ttype_t* curr_arg_m_a_type = ASRUtils::symbol_type(curr_arg.m_a);
+            ASR::ttype_t* curr_arg_m_a_type = ASRUtils::symbol_type(tmp_sym);
             ASR::ttype_t* asr_data_type = ASRUtils::duplicate_type_without_dims(al,
                 curr_arg_m_a_type, curr_arg_m_a_type->base.loc);
             llvm::Type* llvm_data_type = get_type_from_ttype_t_util(asr_data_type);
@@ -1333,8 +1347,7 @@ public:
         arr_descr->set_is_allocated_flag(tmp, 0);
     }
 
-    template <typename T>
-    void _Deallocate(const T& x) {
+    llvm::Function* _Deallocate() {
         std::string func_name = "_lfortran_free";
         llvm::Function *free_fn = module->getFunction(func_name);
         if (!free_fn) {
@@ -1345,28 +1358,41 @@ public:
             free_fn = llvm::Function::Create(function_type,
                     llvm::Function::ExternalLinkage, func_name, *module);
         }
+        return free_fn;
+    }
+
+    void visit_ImplicitDeallocate(const ASR::ImplicitDeallocate_t& x) {
+        llvm::Function* free_fn = _Deallocate();
         for( size_t i = 0; i < x.n_vars; i++ ) {
             const ASR::symbol_t* curr_obj = x.m_vars[i];
             ASR::Variable_t *v = ASR::down_cast<ASR::Variable_t>(
                                     symbol_get_past_external(curr_obj));
             fetch_var(v);
-            if( x.class_type == ASR::stmtType::ImplicitDeallocate ) {
-                llvm::Value *cond = arr_descr->get_is_allocated_flag(tmp);
-                create_if_else(cond, [=]() {
-                    call_lfortran_free(free_fn);
-                }, [](){});
-            } else {
+            llvm::Value *cond = arr_descr->get_is_allocated_flag(tmp);
+            create_if_else(cond, [=]() {
                 call_lfortran_free(free_fn);
-            }
+            }, [](){});
         }
     }
 
-    void visit_ImplicitDeallocate(const ASR::ImplicitDeallocate_t& x) {
-        _Deallocate<ASR::ImplicitDeallocate_t>(x);
-    }
-
     void visit_ExplicitDeallocate(const ASR::ExplicitDeallocate_t& x) {
-        _Deallocate<ASR::ExplicitDeallocate_t>(x);
+        llvm::Function* free_fn = _Deallocate();
+        for( size_t i = 0; i < x.n_vars; i++ ) {
+            const ASR::expr_t* tmp_expr = x.m_vars[i];
+            ASR::symbol_t* curr_obj = nullptr;
+            if( ASR::is_a<ASR::Var_t>(*tmp_expr) ) {
+                const ASR::Var_t* tmp_var = ASR::down_cast<ASR::Var_t>(tmp_expr);
+                curr_obj = tmp_var->m_v;
+            } else {
+                throw CodeGenError("Cannot deallocate variables in expression " +
+                                    std::to_string(tmp_expr->type),
+                                    tmp_expr->base.loc);
+            }
+            ASR::Variable_t *v = ASR::down_cast<ASR::Variable_t>(
+                                    symbol_get_past_external(curr_obj));
+            fetch_var(v);
+            call_lfortran_free(free_fn);
+        }
     }
 
     void visit_ListConstant(const ASR::ListConstant_t& x) {
@@ -1528,6 +1554,60 @@ public:
         tmp = builder->CreateCall(fn, {c});
     }
 
+    void visit_ArrayAll(const ASR::ArrayAll_t &x) {
+        if (x.m_value) {
+            this->visit_expr_wrapper(x.m_value, true);
+            return;
+        }
+        this->visit_expr(*x.m_mask);
+        llvm::Value *mask = tmp;
+        ASR::ttype_t *type = ASRUtils::expr_type(x.m_mask);
+        LCOMPILERS_ASSERT(ASR::is_a<ASR::Logical_t>(*type)) // TODO
+        int32_t n = ASR::down_cast<ASR::Logical_t>(type)->n_dims;
+        llvm::Value *size = llvm::ConstantInt::get(context, llvm::APInt(32, n));
+        if (ASR::is_a<ASR::Var_t>(*x.m_mask)) {
+            mask = LLVM::CreateLoad(*builder, llvm_utils->create_gep(mask, 0));
+        }
+        std::string runtime_func_name = "_lfortran_all";
+        llvm::Function *fn = module->getFunction(runtime_func_name);
+        if (!fn) {
+            llvm::FunctionType *function_type = llvm::FunctionType::get(
+                llvm::Type::getInt1Ty(context), {
+                    llvm::Type::getInt1Ty(context)->getPointerTo(),
+                    llvm::Type::getInt32Ty(context)
+                }, false);
+            fn = llvm::Function::Create(function_type,
+                    llvm::Function::ExternalLinkage, runtime_func_name, *module);
+        }
+        tmp = builder->CreateCall(fn, {mask, size});
+    }
+
+    void visit_IntrinsicFunctionSqrt(const ASR::IntrinsicFunctionSqrt_t &x) {
+        if (x.m_value) {
+            this->visit_expr_wrapper(x.m_value, true);
+            return;
+        }
+        this->visit_expr(*x.m_arg);
+        llvm::Value *c = tmp;
+        int64_t kind_value = ASRUtils::extract_kind_from_ttype_t(ASRUtils::expr_type(x.m_arg));
+        std::string func_name;
+        if (kind_value ==4) {
+            func_name = "llvm.sqrt.f32";
+        } else {
+            func_name = "llvm.sqrt.f64";
+        }
+        llvm::Type *type = getFPType(kind_value);
+        llvm::Function *fn_sqrt = module->getFunction(func_name);
+        if (!fn_sqrt) {
+            llvm::FunctionType *function_type = llvm::FunctionType::get(
+                    type, {type}, false);
+            fn_sqrt = llvm::Function::Create(function_type,
+                    llvm::Function::ExternalLinkage, func_name,
+                    module.get());
+        }
+        tmp = builder->CreateCall(fn_sqrt, {c});
+    }
+
     void visit_ListAppend(const ASR::ListAppend_t& x) {
         ASR::List_t* asr_list = ASR::down_cast<ASR::List_t>(ASRUtils::expr_type(x.m_a));
         int64_t ptr_loads_copy = ptr_loads;
@@ -1543,7 +1623,7 @@ public:
         list_api->append(plist, item, asr_list->m_type, module.get(), name2memidx);
     }
 
-    void visit_UnionRef(const ASR::UnionRef_t& x) {
+    void visit_UnionInstanceMember(const ASR::UnionInstanceMember_t& x) {
         int64_t ptr_loads_copy = ptr_loads;
         ptr_loads = 0;
         this->visit_expr(*x.m_v);
@@ -1745,7 +1825,7 @@ public:
     }
 
     void visit_TupleLen(const ASR::TupleLen_t& x) {
-        LFORTRAN_ASSERT(x.m_value);
+        LCOMPILERS_ASSERT(x.m_value);
         this->visit_expr(*x.m_value);
     }
 
@@ -1780,7 +1860,7 @@ public:
             }
             uint32_t v_h = get_hash((ASR::asr_t*)v);
             if (llvm_symtab.find(v_h) == llvm_symtab.end()) {
-                LFORTRAN_ASSERT(std::find(nested_globals.begin(),
+                LCOMPILERS_ASSERT(std::find(nested_globals.begin(),
                         nested_globals.end(), v_h) != nested_globals.end());
                 auto finder = std::find(nested_globals.begin(),
                         nested_globals.end(), v_h);
@@ -1817,7 +1897,7 @@ public:
             if (x.n_args != 1) {
                 throw CodeGenError("Only string(a) supported for now.", x.base.base.loc);
             }
-            LFORTRAN_ASSERT(ASR::is_a<ASR::Var_t>(*x.m_args[0].m_right));
+            LCOMPILERS_ASSERT(ASR::is_a<ASR::Var_t>(*x.m_args[0].m_right));
             this->visit_expr_wrapper(x.m_args[0].m_right, true);
             llvm::Value *p = nullptr;
             llvm::Value *idx = tmp;
@@ -1867,7 +1947,7 @@ public:
                     llvm_diminfo.push_back(al, dim_size);
                 }
             }
-            LFORTRAN_ASSERT(ASRUtils::extract_n_dims_from_ttype(x_mv_type) > 0);
+            LCOMPILERS_ASSERT(ASRUtils::extract_n_dims_from_ttype(x_mv_type) > 0);
             tmp = arr_descr->get_single_element(array, indices, x.n_args,
                                                 is_data_only,
                                                 ASRUtils::is_fixed_size_array(m_dims, n_dims) && is_bindc_array,
@@ -1888,15 +1968,15 @@ public:
         ASR::dimension_t* m_dims;
         int n_dims = ASRUtils::extract_dimensions_from_ttype(
                         ASRUtils::expr_type(x.m_v), m_dims);
-        LFORTRAN_ASSERT(ASR::is_a<ASR::Character_t>(*ASRUtils::expr_type(x.m_v)) &&
+        LCOMPILERS_ASSERT(ASR::is_a<ASR::Character_t>(*ASRUtils::expr_type(x.m_v)) &&
                         n_dims == 0);
         // String indexing:
         if (x.n_args == 1) {
             throw CodeGenError("Only string(a:b) supported for now.", x.base.base.loc);
         }
 
-        LFORTRAN_ASSERT(x.m_args[0].m_left)
-        LFORTRAN_ASSERT(x.m_args[0].m_right)
+        LCOMPILERS_ASSERT(x.m_args[0].m_left)
+        LCOMPILERS_ASSERT(x.m_args[0].m_right)
         //throw CodeGenError("Only string(a:b) for a,b variables for now.", x.base.base.loc);
         // Use the "right" index for now
         this->visit_expr_wrapper(x.m_args[0].m_right, true);
@@ -1942,8 +2022,8 @@ public:
         if( x.m_value ) {
             if( ASR::is_a<ASR::Integer_t>(*x.m_type) ) {
                 this->visit_expr(*x.m_value);
-            } else if( ASR::is_a<ASR::EnumMember_t>(*x.m_v) ) {
-                ASR::EnumMember_t* x_enum_member = ASR::down_cast<ASR::EnumMember_t>(x.m_v);
+            } else if( ASR::is_a<ASR::EnumStaticMember_t>(*x.m_v) ) {
+                ASR::EnumStaticMember_t* x_enum_member = ASR::down_cast<ASR::EnumStaticMember_t>(x.m_v);
                 ASR::Variable_t* x_mv = ASR::down_cast<ASR::Variable_t>(x_enum_member->m_m);
                 ASR::Enum_t* enum_t = ASR::down_cast<ASR::Enum_t>(x.m_enum_type);
                 ASR::EnumType_t* enum_type = ASR::down_cast<ASR::EnumType_t>(enum_t->m_enum_type);
@@ -2001,13 +2081,13 @@ public:
     }
 
     void visit_EnumTypeConstructor(const ASR::EnumTypeConstructor_t& x) {
-        LFORTRAN_ASSERT(x.n_args == 1);
+        LCOMPILERS_ASSERT(x.n_args == 1);
         ASR::expr_t* m_arg = x.m_args[0];
         this->visit_expr(*m_arg);
     }
 
     void visit_UnionTypeConstructor(const ASR::UnionTypeConstructor_t& x) {
-        LFORTRAN_ASSERT(x.n_args == 0);
+        LCOMPILERS_ASSERT(x.n_args == 0);
     }
 
     void visit_SizeOfType(const ASR::SizeOfType_t& x) {
@@ -2026,7 +2106,7 @@ public:
         der_type_name = "";
         ASR::ttype_t* x_m_v_type = ASRUtils::expr_type(x.m_v);
         int64_t ptr_loads_copy = ptr_loads;
-        if( ASR::is_a<ASR::UnionRef_t>(*x.m_v) ) {
+        if( ASR::is_a<ASR::UnionInstanceMember_t>(*x.m_v) ) {
             ptr_loads = 0;
         } else {
             ptr_loads = 2 - ASR::is_a<ASR::Pointer_t>(*x_m_v_type);
@@ -2035,7 +2115,7 @@ public:
         ptr_loads = ptr_loads_copy;
         ASR::Variable_t* member = down_cast<ASR::Variable_t>(symbol_get_past_external(x.m_m));
         std::string member_name = std::string(member->m_name);
-        LFORTRAN_ASSERT(der_type_name.size() != 0);
+        LCOMPILERS_ASSERT(der_type_name.size() != 0);
         while( name2memidx[der_type_name].find(member_name) == name2memidx[der_type_name].end() ) {
             if( dertype2parent.find(der_type_name) == dertype2parent.end() ) {
                 throw CodeGenError(der_type_name + " doesn't have any member named " + member_name,
@@ -2049,7 +2129,7 @@ public:
             llvm::ConstantInt::get(context, llvm::APInt(32, 0)),
             llvm::ConstantInt::get(context, llvm::APInt(32, member_idx))};
         // if( (ASR::is_a<ASR::StructInstanceMember_t>(*x.m_v) ||
-        //      ASR::is_a<ASR::UnionRef_t>(*x.m_v)) &&
+        //      ASR::is_a<ASR::UnionInstanceMember_t>(*x.m_v)) &&
         //     is_nested_pointer(tmp) ) {
         //     tmp = CreateLoad(tmp);
         // }
@@ -2080,7 +2160,7 @@ public:
         // (global variable declared/initialized in this translation unit), or
         // external (global variable not declared/initialized in this
         // translation unit, just referenced).
-        LFORTRAN_ASSERT(x.m_intent == intent_local
+        LCOMPILERS_ASSERT(x.m_intent == intent_local
             || x.m_abi == ASR::abiType::Interactive);
         bool external = (x.m_abi != ASR::abiType::Source);
         llvm::Constant* init_value = nullptr;
@@ -2173,6 +2253,25 @@ public:
                 }
             }
             llvm_symtab[h] = ptr;
+        } else if( x.m_type->type == ASR::ttypeType::Struct ) {
+            ASR::Struct_t* struct_t = ASR::down_cast<ASR::Struct_t>(x.m_type);
+            if( ASRUtils::is_c_ptr(struct_t->m_derived_type) ) {
+                llvm::Type* void_ptr = llvm::Type::getVoidTy(context)->getPointerTo();
+                llvm::Constant *ptr = module->getOrInsertGlobal(x.m_name,
+                    void_ptr);
+                if (!external) {
+                    if (init_value) {
+                        module->getNamedGlobal(x.m_name)->setInitializer(
+                                init_value);
+                    } else {
+                        module->getNamedGlobal(x.m_name)->setInitializer(
+                                llvm::ConstantPointerNull::get(
+                                    static_cast<llvm::PointerType*>(void_ptr))
+                                );
+                    }
+                }
+                llvm_symtab[h] = ptr;
+            }
         } else if(x.m_type->type == ASR::ttypeType::Pointer) {
             ASR::dimension_t* m_dims = nullptr;
             int n_dims = -1, a_kind = -1;
@@ -2197,7 +2296,7 @@ public:
         } else if (x.m_type->type == ASR::ttypeType::TypeParameter) {
             // Ignore type variables
         } else {
-            throw CodeGenError("Variable type not supported", x.base.base.loc);
+            throw CodeGenError("Variable type not supported " + std::to_string(x.m_type->type), x.base.base.loc);
         }
     }
 
@@ -2319,7 +2418,7 @@ public:
         uint32_t h = get_hash((ASR::asr_t*)&x);
         llvm::FunctionType *function_type = llvm::FunctionType::get(
                 llvm::Type::getVoidTy(context), {}, false);
-        LFORTRAN_ASSERT(llvm_symtab_fn.find(h) == llvm_symtab_fn.end());
+        LCOMPILERS_ASSERT(llvm_symtab_fn.find(h) == llvm_symtab_fn.end());
         std::string module_fn_name = "__lfortran_module_init_" + std::string(x.m_name);
         llvm::Function *F = llvm::Function::Create(function_type,
                 llvm::Function::ExternalLinkage, module_fn_name, module.get());
@@ -2349,8 +2448,10 @@ public:
             if (is_a<ASR::Function_t>(*item.second)) {
                 ASR::Function_t *v = down_cast<ASR::Function_t>(
                         item.second);
-                instantiate_function(*v);
-                declare_needed_global_types(*v);
+                if (ASRUtils::get_FunctionType(v)->n_type_params == 0) {
+                    instantiate_function(*v);
+                    declare_needed_global_types(*v);
+                }
             }
         }
         finish_module_init_function_prototype(x);
@@ -2370,8 +2471,10 @@ public:
             if (is_a<ASR::Function_t>(*item.second)) {
                 ASR::Function_t *v = down_cast<ASR::Function_t>(
                         item.second);
-                instantiate_function(*v);
-                declare_needed_global_types(*v);
+                if (ASRUtils::get_FunctionType(v)->n_type_params == 0) {
+                    instantiate_function(*v);
+                    declare_needed_global_types(*v);
+                }
             }
         }
         declare_needed_global_types(x);
@@ -2760,7 +2863,7 @@ public:
     }
 
     void allocate_array_members_of_struct(llvm::Value* ptr, ASR::ttype_t* asr_type) {
-        LFORTRAN_ASSERT(ASR::is_a<ASR::Struct_t>(*asr_type));
+        LCOMPILERS_ASSERT(ASR::is_a<ASR::Struct_t>(*asr_type));
         ASR::Struct_t* struct_t = ASR::down_cast<ASR::Struct_t>(asr_type);
         ASR::StructType_t* struct_type_t = ASR::down_cast<ASR::StructType_t>(
             ASRUtils::symbol_get_past_external(struct_t->m_derived_type));
@@ -2831,7 +2934,7 @@ public:
                         if( x.class_type == ASR::symbolType::Function ) {
                             ASR::Function_t* _func = (ASR::Function_t*)(&(x.base));
                             m_h = get_hash((ASR::asr_t*)_func);
-                            abi_type = _func->m_abi;
+                            abi_type = ASRUtils::get_FunctionType(_func)->m_abi;
                             is_v_arg = is_argument(v, _func->m_args, _func->n_args);
                         }
                         if( is_array_type && !is_list ) {
@@ -2889,15 +2992,32 @@ public:
                             ptr->setAlignment(align);
                         }
                     }
+
                     llvm_symtab[h] = ptr;
                     fill_array_details_(ptr, m_dims, n_dims,
                         is_malloc_array_type,
                         is_array_type, is_list, v->m_type);
-                    if( v->m_symbolic_value != nullptr &&
+                    ASR::expr_t* init_expr = v->m_symbolic_value;
+                    if( !ASR::is_a<ASR::Const_t>(*v->m_type) ) {
+                        for( size_t i = 0; i < v->n_dependencies; i++ ) {
+                            std::string variable_name = v->m_dependencies[i];
+                            ASR::symbol_t* dep_sym = x.m_symtab->resolve_symbol(variable_name);
+                            if( (dep_sym && ASR::is_a<ASR::Variable_t>(*dep_sym) &&
+                                !ASR::down_cast<ASR::Variable_t>(dep_sym)->m_symbolic_value) )  {
+                                init_expr = nullptr;
+                                break;
+                            }
+                        }
+                    }
+                    if( init_expr != nullptr &&
                         !ASR::is_a<ASR::List_t>(*v->m_type)) {
                         target_var = ptr;
                         tmp = nullptr;
-                        this->visit_expr_wrapper(v->m_symbolic_value, true);
+                        if (v->m_value != nullptr) {
+                            this->visit_expr_wrapper(v->m_value, true);
+                        } else {
+                            this->visit_expr_wrapper(v->m_symbolic_value, true);
+                        }
                         llvm::Value *init_value = tmp;
                         if (ASR::is_a<ASR::ArrayConstant_t>(*v->m_symbolic_value)) {
                             target_var = arr_descr->get_pointer_to_data(target_var);
@@ -2931,7 +3051,7 @@ public:
                                 llvm::Value *init_value = llvm::Constant::getNullValue(type);
                                 builder->CreateStore(init_value, target_var);
                             } else if (strlen == -3) {
-                                LFORTRAN_ASSERT(t->m_len_expr)
+                                LCOMPILERS_ASSERT(t->m_len_expr)
                                 this->visit_expr(*t->m_len_expr);
                                 llvm::Value *arg_size = tmp;
                                 arg_size = builder->CreateAdd(arg_size, llvm::ConstantInt::get(context, llvm::APInt(32, 1)));
@@ -3065,7 +3185,7 @@ public:
                                 type = type_fx2;
                             }
                         } else {
-                            LFORTRAN_ASSERT(a_kind == 8)
+                            LCOMPILERS_ASSERT(a_kind == 8)
                             if (compiler_options.platform == Platform::Windows) {
                                 // 128 bit aggregate type is passed by reference
                                 type = getComplexType(a_kind, true);
@@ -3188,7 +3308,7 @@ public:
                 break ;
             }
             default :
-                LFORTRAN_ASSERT(false);
+                LCOMPILERS_ASSERT(false);
         }
         return type;
     }
@@ -3200,13 +3320,13 @@ public:
             if (is_a<ASR::Variable_t>(*symbol_get_past_external(
                 ASR::down_cast<ASR::Var_t>(x.m_args[i])->m_v))) {
                 ASR::Variable_t *arg = EXPR2VAR(x.m_args[i]);
-                LFORTRAN_ASSERT(is_arg_dummy(arg->m_intent));
+                LCOMPILERS_ASSERT(is_arg_dummy(arg->m_intent));
                 // We pass all arguments as pointers for now,
                 // except bind(C) value arguments that are passed by value
                 llvm::Type *type = nullptr, *type_original = nullptr;
                 int n_dims = 0, a_kind = 4;
                 bool is_array_type = false;
-                type_original = get_arg_type_from_ttype_t(arg->m_type, x.m_abi,
+                type_original = get_arg_type_from_ttype_t(arg->m_type, ASRUtils::get_FunctionType(x)->m_abi,
                                     arg->m_abi, arg->m_storage, arg->m_value_attr,
                                     n_dims, a_kind, is_array_type, arg->m_intent,
                                     false);
@@ -3226,11 +3346,11 @@ public:
                     m_h = get_hash((ASR::asr_t*)_func);
                 }
                 if( is_array_type && arg->m_type->type != ASR::ttypeType::Pointer ) {
-                    if( x.m_abi == ASR::abiType::Source ) {
+                    if( ASRUtils::get_FunctionType(x)->m_abi == ASR::abiType::Source ) {
                         llvm::Type* orig_type = type_original;
                         type = arr_descr->get_argument_type(orig_type, m_h, arg->m_name, arr_arg_type_cache);
                         is_array_type = false;
-                    } else if( x.m_abi == ASR::abiType::Intrinsic &&
+                    } else if( ASRUtils::get_FunctionType(x)->m_abi == ASR::abiType::Intrinsic &&
                         fname2arg_type.find(m_name) != fname2arg_type.end()) {
                         type = fname2arg_type[m_name].second;
                         is_array_type = false;
@@ -3370,7 +3490,7 @@ public:
             if (is_a<ASR::Variable_t>(*symbol_get_past_external(
                     ASR::down_cast<ASR::Var_t>(x.m_args[i])->m_v))) {
                 ASR::Variable_t *arg = EXPR2VAR(x.m_args[i]);
-                LFORTRAN_ASSERT(is_arg_dummy(arg->m_intent));
+                LCOMPILERS_ASSERT(is_arg_dummy(arg->m_intent));
                 uint32_t h = get_hash((ASR::asr_t*)arg);
                 auto finder = std::find(nested_globals.begin(),
                     nested_globals.end(), h);
@@ -3410,7 +3530,7 @@ public:
         dict_api_sc->set_is_dict_present(false);
         llvm_goto_targets.clear();
         instantiate_function(x);
-        if (x.m_deftype == ASR::deftypeType::Interface) {
+        if (ASRUtils::get_FunctionType(x)->m_deftype == ASR::deftypeType::Interface) {
             // Interface does not have an implementation and it is already
             // declared, so there is nothing to do here
             return;
@@ -3442,14 +3562,14 @@ public:
         } else {
             llvm::FunctionType* function_type = get_function_type(x);
             std::string fn_name;
-            if (x.m_abi == ASR::abiType::BindC) {
-                if (x.m_bindc_name) {
-                    fn_name = x.m_bindc_name;
+            if (ASRUtils::get_FunctionType(x)->m_abi == ASR::abiType::BindC) {
+                if (ASRUtils::get_FunctionType(x)->m_bindc_name) {
+                    fn_name = ASRUtils::get_FunctionType(x)->m_bindc_name;
                 } else {
                     fn_name = sym_name;
                 }
-            } else if (x.m_deftype == ASR::deftypeType::Interface &&
-                x.m_abi != ASR::abiType::Intrinsic) {
+            } else if (ASRUtils::get_FunctionType(x)->m_deftype == ASR::deftypeType::Interface &&
+                ASRUtils::get_FunctionType(x)->m_abi != ASR::abiType::Intrinsic) {
                 fn_name = sym_name;
             } else {
                 fn_name = mangle_prefix + sym_name;
@@ -3479,7 +3599,23 @@ public:
                 if (is_a<ASR::Function_t>(*item.second)) {
                     ASR::Function_t *v = down_cast<ASR::Function_t>(
                             item.second);
-                    instantiate_function(*v);
+                    // check if item.second is present in x.m_args
+                    bool interface_as_arg = false;
+                    for (size_t i=0; i<x.n_args; i++) {
+                        if (is_a<ASR::Var_t>(*x.m_args[i])) {
+                            ASR::Var_t *arg = down_cast<ASR::Var_t>(x.m_args[i]);
+                            if ( arg->m_v == item.second ) {
+                                interface_as_arg = true;
+                                llvm::FunctionType* fntype = get_function_type(*v);
+                                llvm::Function* fn = llvm::Function::Create(fntype, llvm::Function::ExternalLinkage, v->m_name, module.get());
+                                uint32_t hash = get_hash((ASR::asr_t*)v);
+                                llvm_symtab_fn[hash] = fn;
+                            }
+                        }
+                    }
+                    if (!interface_as_arg) {
+                        instantiate_function(*v);
+                    }
                 }
             }
         }
@@ -3505,7 +3641,7 @@ public:
                 case (ASR::ttypeType::Complex) : {
                     int a_kind = down_cast<ASR::Complex_t>(return_var_type0)->m_kind;
                     if (a_kind == 4) {
-                        if (x.m_abi == ASR::abiType::BindC) {
+                        if (ASRUtils::get_FunctionType(x)->m_abi == ASR::abiType::BindC) {
                             if (compiler_options.platform == Platform::Windows) {
                                 // i64
                                 return_type = llvm::Type::getInt64Ty(context);
@@ -3520,8 +3656,8 @@ public:
                             return_type = getComplexType(a_kind);
                         }
                     } else {
-                        LFORTRAN_ASSERT(a_kind == 8)
-                        if (x.m_abi == ASR::abiType::BindC) {
+                        LCOMPILERS_ASSERT(a_kind == 8)
+                        if (ASRUtils::get_FunctionType(x)->m_abi == ASR::abiType::BindC) {
                             if (compiler_options.platform == Platform::Windows) {
                                 // pass as subroutine
                                 return_type = getComplexType(a_kind, true);
@@ -3688,7 +3824,7 @@ public:
             llvm::Value *ret_val = llvm_symtab[h];
             llvm::Value *ret_val2 = CreateLoad(ret_val);
             // Handle Complex type return value for BindC:
-            if (x.m_abi == ASR::abiType::BindC) {
+            if (ASRUtils::get_FunctionType(x)->m_abi == ASR::abiType::BindC) {
                 ASR::ttype_t* arg_type = asr_retval->m_type;
                 llvm::Value *tmp = ret_val;
                 if (is_a<ASR::Complex_t>(*arg_type)) {
@@ -3715,7 +3851,7 @@ public:
                             tmp = CreateLoad(tmp);
                         }
                     } else {
-                        LFORTRAN_ASSERT(c_kind == 8)
+                        LCOMPILERS_ASSERT(c_kind == 8)
                         if (compiler_options.platform == Platform::Windows) {
                             // 128 bit aggregate type is passed by reference
                         } else {
@@ -3734,13 +3870,13 @@ public:
     }
 
     void generate_function(const ASR::Function_t &x) {
-        bool interactive = (x.m_abi == ASR::abiType::Interactive);
-        if (x.m_deftype == ASR::deftypeType::Implementation ) {
+        bool interactive = (ASRUtils::get_FunctionType(x)->m_abi == ASR::abiType::Interactive);
+        if (ASRUtils::get_FunctionType(x)->m_deftype == ASR::deftypeType::Implementation ) {
 
             if (interactive) return;
 
             if (compiler_options.generate_object_code
-                    && (x.m_abi == ASR::abiType::Intrinsic)
+                    && (ASRUtils::get_FunctionType(x)->m_abi == ASR::abiType::Intrinsic)
                     && !compiler_options.rtlib) {
                 // Skip intrinsic functions in generate_object_code mode
                 // They must be later linked
@@ -3756,8 +3892,8 @@ public:
 
                 define_function_exit(x);
             }
-        } else if( x.m_abi == ASR::abiType::Intrinsic &&
-                   x.m_deftype == ASR::deftypeType::Interface ) {
+        } else if( ASRUtils::get_FunctionType(x)->m_abi == ASR::abiType::Intrinsic &&
+                   ASRUtils::get_FunctionType(x)->m_deftype == ASR::deftypeType::Interface ) {
             std::string m_name = x.m_name;
             if( m_name == "lbound" || m_name == "ubound" ) {
                 define_function_entry(x);
@@ -3799,7 +3935,9 @@ public:
         for (auto &item : x.m_symtab->get_scope()) {
             if (is_a<ASR::Function_t>(*item.second)) {
                 ASR::Function_t *s = ASR::down_cast<ASR::Function_t>(item.second);
-                visit_Function(*s);
+                if (ASRUtils::get_FunctionType(s)->n_type_params == 0) {
+                    visit_Function(*s);
+                }
             }
         }
     }
@@ -4098,7 +4236,7 @@ public:
             x.m_target->type == ASR::exprType::ArraySection ||
             x.m_target->type == ASR::exprType::StructInstanceMember ||
             x.m_target->type == ASR::exprType::ListItem ||
-            x.m_target->type == ASR::exprType::UnionRef ) {
+            x.m_target->type == ASR::exprType::UnionInstanceMember ) {
             is_assignment_target = true;
             this->visit_expr(*x.m_target);
             is_assignment_target = false;
@@ -4156,7 +4294,7 @@ public:
                 nested_05.f90 */
                 auto finder = std::find(nested_globals.begin(),
                         nested_globals.end(), h);
-                LFORTRAN_ASSERT(finder != nested_globals.end());
+                LCOMPILERS_ASSERT(finder != nested_globals.end());
                 llvm::Value* ptr = module->getOrInsertGlobal(nested_desc_name,
                     nested_global_struct);
                 int idx = std::distance(nested_globals.begin(), finder);
@@ -4309,7 +4447,7 @@ public:
     }
 
     void visit_AssociateBlockCall(const ASR::AssociateBlockCall_t& x) {
-        LFORTRAN_ASSERT(ASR::is_a<ASR::AssociateBlock_t>(*x.m_m));
+        LCOMPILERS_ASSERT(ASR::is_a<ASR::AssociateBlock_t>(*x.m_m));
         ASR::AssociateBlock_t* associate_block = ASR::down_cast<ASR::AssociateBlock_t>(x.m_m);
         declare_vars(*associate_block);
         for (size_t i = 0; i < associate_block->n_body; i++) {
@@ -4318,6 +4456,15 @@ public:
     }
 
     void visit_BlockCall(const ASR::BlockCall_t& x) {
+        /* The current `in_block` implementation has the following limitations:
+         * - Does not work for nested blocks. To fix it there, we should change
+         *   it to an integer and keep incrementing it for each block.
+         * - Combining blocks and loops.
+         * - The label in `exit` is currently ignored, so we only jump to the
+         *   inner most label. Instead we need to jump to the actual label
+         *   provided.
+         */
+        in_block = true;
         if( x.m_label != -1 ) {
             if( llvm_goto_targets.find(x.m_label) == llvm_goto_targets.end() ) {
                 llvm::BasicBlock *new_target = llvm::BasicBlock::Create(context, "goto_target");
@@ -4325,12 +4472,30 @@ public:
             }
             start_new_block(llvm_goto_targets[x.m_label]);
         }
-        LFORTRAN_ASSERT(ASR::is_a<ASR::Block_t>(*x.m_m));
+        LCOMPILERS_ASSERT(ASR::is_a<ASR::Block_t>(*x.m_m));
         ASR::Block_t* block = ASR::down_cast<ASR::Block_t>(x.m_m);
         declare_vars(*block);
+        std::string block_name = std::string(block->m_name);
+        std::string block_end_name = "block_"+block_name+"_end";
+        llvm::BasicBlock *block_start = llvm::BasicBlock::Create(context, "block_"+block_name+"_start");
+        start_new_block(block_start);
+        llvm::BasicBlock *block_end = llvm::BasicBlock::Create(context, "block_"+block_name+"_end");
+        llvm::Function *fn = block_start->getParent();
+        fn->getBasicBlockList().push_back(block_end);
+        builder->SetInsertPoint(block_start);
+        block_end_label = block_end;
         for (size_t i = 0; i < block->n_body; i++) {
             this->visit_stmt(*(block->m_body[i]));
         }
+        llvm::BasicBlock *last_bb = builder->GetInsertBlock();
+        llvm::Instruction *block_terminator = last_bb->getTerminator();
+        if (block_terminator == nullptr) {
+            // The previous block is not terminated --- terminate it by jumping
+            // to block_end
+            builder->CreateBr(block_end);
+        }
+        builder->SetInsertPoint(block_end);
+        in_block=false;
     }
 
     inline void visit_expr_wrapper(const ASR::expr_t* x, bool load_ref=false) {
@@ -4591,9 +4756,17 @@ public:
     }
 
     void visit_Exit(const ASR::Exit_t & /* x */) {
-        builder->CreateBr(current_loopend);
-        llvm::BasicBlock *bb = llvm::BasicBlock::Create(context, "unreachable_after_exit");
-        start_new_block(bb);
+        if ( in_block ) {
+            // If we are in a block, we need to exit the block.
+            // This is done by jumping to the end of the block.
+            builder->CreateBr(block_end_label);
+            llvm::BasicBlock *bb = llvm::BasicBlock::Create(context, "unreachable_after_exit_block");
+            start_new_block(bb);
+        } else {
+            builder->CreateBr(current_loopend);
+            llvm::BasicBlock *bb = llvm::BasicBlock::Create(context, "unreachable_after_exit");
+            start_new_block(bb);
+        }
     }
 
     void visit_Cycle(const ASR::Cycle_t & /* x */) {
@@ -4639,14 +4812,58 @@ public:
         llvm::Value *left_val = tmp;
         this->visit_expr_wrapper(x.m_right, true);
         llvm::Value *right_val = tmp;
-        LFORTRAN_ASSERT(ASRUtils::is_logical(*x.m_type))
+        llvm::Value *zero, *cond;
+        llvm::AllocaInst *result;
+        if (ASRUtils::is_integer(*x.m_type)) {
+            int a_kind = down_cast<ASR::Integer_t>(x.m_type)->m_kind;
+            int init_value_bits = 8*a_kind;
+            zero = llvm::ConstantInt::get(context,
+                            llvm::APInt(init_value_bits, 0));
+            cond = builder->CreateICmpEQ(left_val, zero);
+            result = builder->CreateAlloca(getIntType(a_kind), nullptr);
+        } else if (ASRUtils::is_real(*x.m_type)) {
+            int a_kind = down_cast<ASR::Real_t>(x.m_type)->m_kind;
+            int init_value_bits = 8*a_kind;
+            if (init_value_bits == 32) {
+                zero = llvm::ConstantFP::get(context,
+                                    llvm::APFloat((float)0));
+            } else {
+                zero = llvm::ConstantFP::get(context,
+                                    llvm::APFloat((double)0));
+            }
+            result = builder->CreateAlloca(getFPType(a_kind), nullptr);
+            cond = builder->CreateFCmpUEQ(left_val, zero);
+        } else if (ASRUtils::is_character(*x.m_type)) {
+            zero = llvm::Constant::getNullValue(character_type);
+            cond = lfortran_str_cmp(left_val, zero, "_lpython_str_compare_eq");
+            result = builder->CreateAlloca(character_type, nullptr);
+        } else if (ASRUtils::is_logical(*x.m_type)) {
+            zero = llvm::ConstantInt::get(context,
+                            llvm::APInt(1, 0));
+            cond = builder->CreateICmpEQ(left_val, zero);
+            result = builder->CreateAlloca(llvm::Type::getInt1Ty(context), nullptr);
+        } else {
+            throw CodeGenError("Only Integer, Real, Strings and Logical types are supported "
+            "in logical binary operation.", x.base.base.loc);
+        }
         switch (x.m_op) {
             case ASR::logicalbinopType::And: {
-                tmp = builder->CreateAnd(left_val, right_val);
+                create_if_else(cond, [&, result, left_val]() {
+                    LLVM::CreateStore(*builder, left_val, result);
+                }, [&, result, right_val]() {
+                    LLVM::CreateStore(*builder, right_val, result);
+                });
+                tmp = LLVM::CreateLoad(*builder, result);
                 break;
             };
             case ASR::logicalbinopType::Or: {
-                tmp = builder->CreateOr(left_val, right_val);
+                create_if_else(cond, [&, result, right_val]() {
+                    LLVM::CreateStore(*builder, right_val, result);
+
+                }, [&, result, left_val]() {
+                    LLVM::CreateStore(*builder, left_val, result);
+                });
+                tmp = LLVM::CreateLoad(*builder, result);
                 break;
             };
             case ASR::logicalbinopType::Xor: {
@@ -4779,7 +4996,7 @@ public:
         llvm::Value *left_val = tmp;
         this->visit_expr_wrapper(x.m_right, true);
         llvm::Value *right_val = tmp;
-        LFORTRAN_ASSERT(ASRUtils::is_integer(*x.m_type))
+        LCOMPILERS_ASSERT(ASRUtils::is_integer(*x.m_type))
         switch (x.m_op) {
             case ASR::binopType::Add: {
                 tmp = builder->CreateAdd(left_val, right_val);
@@ -4854,7 +5071,7 @@ public:
         this->visit_expr_wrapper(x.m_right, true);
         llvm::Value *right_val = tmp;
         lookup_enum_value_for_nonints = false;
-        LFORTRAN_ASSERT(ASRUtils::is_real(*x.m_type))
+        LCOMPILERS_ASSERT(ASRUtils::is_real(*x.m_type))
         switch (x.m_op) {
             case ASR::binopType::Add: {
                 tmp = builder->CreateFAdd(left_val, right_val);
@@ -4905,7 +5122,7 @@ public:
         llvm::Value *left_val = tmp;
         this->visit_expr_wrapper(x.m_right, true);
         llvm::Value *right_val = tmp;
-        LFORTRAN_ASSERT(ASRUtils::is_complex(*x.m_type));
+        LCOMPILERS_ASSERT(ASRUtils::is_complex(*x.m_type));
         llvm::Type *type;
         int a_kind;
         a_kind = down_cast<ASR::Complex_t>(ASRUtils::type_get_past_pointer(x.m_type))->m_kind;
@@ -5111,6 +5328,8 @@ public:
                 default :
                     throw CodeGenError("ConstArray real kind not supported yet");
             }
+        } else if (ASR::is_a<ASR::Logical_t>(*x.m_type)) {
+            el_type = llvm::Type::getInt1Ty(context);
         } else {
             throw CodeGenError("ConstArray type not supported yet");
         }
@@ -5155,6 +5374,9 @@ public:
                     default :
                         throw CodeGenError("ConstArray real kind not supported yet");
                 }
+            } else if (ASR::is_a<ASR::Logical_t>(*x.m_type)) {
+                ASR::LogicalConstant_t *cr = ASR::down_cast<ASR::LogicalConstant_t>(el);
+                llvm_val = llvm::ConstantInt::get(context, llvm::APInt(1, cr->m_value));
             } else {
                 throw CodeGenError("ConstArray type not supported yet");
             }
@@ -5165,8 +5387,16 @@ public:
     }
 
     void visit_Assert(const ASR::Assert_t &x) {
+        if (compiler_options.emit_debug_info) debug_emit_loc(x);
         this->visit_expr_wrapper(x.m_test, true);
         create_if_else(tmp, []() {}, [=]() {
+            if (compiler_options.emit_debug_info) {
+                llvm::Value *fmt_ptr = builder->CreateGlobalStringPtr(infile);
+                llvm::Value *fmt_ptr1 = llvm::ConstantInt::get(context, llvm::APInt(
+                    1, compiler_options.use_colors));
+                call_print_stacktrace_addresses(context, *module, *builder,
+                    {fmt_ptr, fmt_ptr1});
+            }
             if (x.m_msg) {
                 char* s = ASR::down_cast<ASR::StringConstant_t>(x.m_msg)->m_s;
                 llvm::Value *fmt_ptr = builder->CreateGlobalStringPtr("AssertionError: %s\n");
@@ -5243,7 +5473,7 @@ public:
 
     inline void fetch_ptr(ASR::Variable_t* x) {
         uint32_t x_h = get_hash((ASR::asr_t*)x);
-        LFORTRAN_ASSERT(llvm_symtab.find(x_h) != llvm_symtab.end());
+        LCOMPILERS_ASSERT(llvm_symtab.find(x_h) != llvm_symtab.end());
         llvm::Value* x_v = llvm_symtab[x_h];
         int64_t ptr_loads_copy = ptr_loads;
         tmp = x_v;
@@ -5259,7 +5489,7 @@ public:
         // element in the runtime descriptor, get element pointer and create
         // load
         if (llvm_symtab.find(x_h) == llvm_symtab.end()) {
-            LFORTRAN_ASSERT(std::find(nested_globals.begin(),
+            LCOMPILERS_ASSERT(std::find(nested_globals.begin(),
                     nested_globals.end(), x_h) != nested_globals.end());
             auto finder = std::find(nested_globals.begin(),
                     nested_globals.end(), x_h);
@@ -5371,7 +5601,7 @@ public:
     {
         dest_kind = ASRUtils::extract_kind_from_ttype_t(x.m_type);
         ASR::ttype_t* curr_type = extract_ttype_t_from_expr(x.m_arg);
-        LFORTRAN_ASSERT(curr_type != nullptr)
+        LCOMPILERS_ASSERT(curr_type != nullptr)
         arg_kind = ASRUtils::extract_kind_from_ttype_t(curr_type);
     }
 
@@ -5522,7 +5752,7 @@ public:
             }
             case (ASR::cast_kindType::IntegerToLogical) : {
                 ASR::ttype_t* curr_type = extract_ttype_t_from_expr(x.m_arg);
-                LFORTRAN_ASSERT(curr_type != nullptr)
+                LCOMPILERS_ASSERT(curr_type != nullptr)
                 int a_kind = ASRUtils::extract_kind_from_ttype_t(curr_type);
                 switch (a_kind) {
                     case 1:
@@ -5543,7 +5773,7 @@ public:
             case (ASR::cast_kindType::RealToLogical) : {
                 llvm::Value *zero;
                 ASR::ttype_t* curr_type = extract_ttype_t_from_expr(x.m_arg);
-                LFORTRAN_ASSERT(curr_type != nullptr)
+                LCOMPILERS_ASSERT(curr_type != nullptr)
                 int a_kind = ASRUtils::extract_kind_from_ttype_t(curr_type);
                 if (a_kind == 4) {
                     zero = llvm::ConstantFP::get(context, llvm::APFloat((float)0.0));
@@ -5569,7 +5799,7 @@ public:
                 // !(c.real == 0.0 && c.imag == 0.0)
                 llvm::Value *zero;
                 ASR::ttype_t* curr_type = extract_ttype_t_from_expr(x.m_arg);
-                LFORTRAN_ASSERT(curr_type != nullptr)
+                LCOMPILERS_ASSERT(curr_type != nullptr)
                 int a_kind = ASRUtils::extract_kind_from_ttype_t(curr_type);
                 if (a_kind == 4) {
                     zero = llvm::ConstantFP::get(context, llvm::APFloat((float)0.0));
@@ -5713,7 +5943,7 @@ public:
             case (ASR::cast_kindType::RealToCharacter) : {
                 llvm::Value *arg = tmp;
                 ASR::ttype_t* arg_type = extract_ttype_t_from_expr(x.m_arg);
-                LFORTRAN_ASSERT(arg_type != nullptr)
+                LCOMPILERS_ASSERT(arg_type != nullptr)
                 int arg_kind = ASRUtils::extract_kind_from_ttype_t(arg_type);
                 tmp = lfortran_type_to_str(arg, getFPType(arg_kind), "float", arg_kind);
                 break;
@@ -5721,7 +5951,7 @@ public:
             case (ASR::cast_kindType::IntegerToCharacter) : {
                 llvm::Value *arg = tmp;
                 ASR::ttype_t* arg_type = extract_ttype_t_from_expr(x.m_arg);
-                LFORTRAN_ASSERT(arg_type != nullptr)
+                LCOMPILERS_ASSERT(arg_type != nullptr)
                 int arg_kind = ASRUtils::extract_kind_from_ttype_t(arg_type);
                 tmp = lfortran_type_to_str(arg, getIntType(arg_kind), "int", arg_kind);
                 break;
@@ -5766,9 +5996,8 @@ public:
                 {x.m_fmt->base.loc}, "treated as '*'");
         }
         if (x.m_unit != nullptr) {
-            diag.codegen_error_label("unit in write() is not implemented yet",
-                {x.m_unit->base.loc}, "not implemented");
-            throw CodeGenAbort();
+            diag.codegen_warning_label("unit in write() is not implemented yet and it is currently treated as '*'",
+                {x.m_unit->base.loc}, "treated as '*'");
         }
         handle_print(x);
     }
@@ -5949,6 +6178,14 @@ public:
     }
 
     void visit_Stop(const ASR::Stop_t &x) {
+        if (compiler_options.emit_debug_info) {
+            debug_emit_loc(x);
+            llvm::Value *fmt_ptr = builder->CreateGlobalStringPtr(infile);
+            llvm::Value *fmt_ptr1 = llvm::ConstantInt::get(context, llvm::APInt(
+                1, compiler_options.use_colors));
+            call_print_stacktrace_addresses(context, *module, *builder,
+                {fmt_ptr, fmt_ptr1});
+        }
         llvm::Value *fmt_ptr = builder->CreateGlobalStringPtr("STOP\n");
         print_error(context, *module, *builder, {fmt_ptr});
         llvm::Value *exit_code;
@@ -5963,7 +6200,15 @@ public:
         exit(context, *module, *builder, exit_code);
     }
 
-    void visit_ErrorStop(const ASR::ErrorStop_t & /* x */) {
+    void visit_ErrorStop(const ASR::ErrorStop_t &x) {
+        if (compiler_options.emit_debug_info) {
+            debug_emit_loc(x);
+            llvm::Value *fmt_ptr = builder->CreateGlobalStringPtr(infile);
+            llvm::Value *fmt_ptr1 = llvm::ConstantInt::get(context, llvm::APInt(
+                1, compiler_options.use_colors));
+            call_print_stacktrace_addresses(context, *module, *builder,
+                {fmt_ptr, fmt_ptr1});
+        }
         llvm::Value *fmt_ptr = builder->CreateGlobalStringPtr("ERROR STOP\n");
         print_error(context, *module, *builder, {fmt_ptr});
         int exit_code_int = 1;
@@ -5987,7 +6232,7 @@ public:
                 arg_intent = orig_arg->m_intent;
             }
         }
-        x_abi = func_subrout->m_abi;
+        x_abi = ASRUtils::get_FunctionType(func_subrout)->m_abi;
     }
 
 
@@ -5998,7 +6243,7 @@ public:
         ASR::abiType x_abi = ASR::abiType::Source;
         if( is_a<ASR::Function_t>(*func_subrout) ) {
             ASR::Function_t* func = down_cast<ASR::Function_t>(func_subrout);
-            x_abi = func->m_abi;
+            x_abi = ASRUtils::get_FunctionType(func)->m_abi;
         }
 
         for (size_t i=0; i<x.n_args; i++) {
@@ -6018,7 +6263,15 @@ public:
                     set_func_subrout_params(func, x_abi, m_h, orig_arg, orig_arg_name, orig_arg_intent, i);
                 }
             } else {
-                LFORTRAN_ASSERT(false)
+                LCOMPILERS_ASSERT(false)
+            }
+
+            if( x.m_args[i].m_value == nullptr ) {
+                LCOMPILERS_ASSERT(orig_arg != nullptr);
+                llvm::Type* llvm_orig_arg_type = get_type_from_ttype_t_util(orig_arg->m_type);
+                llvm::Value* llvm_arg = builder->CreateAlloca(llvm_orig_arg_type);
+                args.push_back(llvm_arg);
+                continue ;
             }
             if (x.m_args[i].m_value->type == ASR::exprType::Var) {
                 if (is_a<ASR::Variable_t>(*symbol_get_past_external(
@@ -6102,7 +6355,7 @@ public:
                                                     tmp = CreateLoad(tmp);
                                                 }
                                             } else {
-                                                LFORTRAN_ASSERT(c_kind == 8)
+                                                LCOMPILERS_ASSERT(c_kind == 8)
                                                 if (compiler_options.platform == Platform::Windows) {
                                                     // 128 bit aggregate type is passed by reference
                                                 } else {
@@ -6174,7 +6427,7 @@ public:
                         symbol_get_past_external(ASR::down_cast<ASR::Var_t>(
                         x.m_args[i].m_value)->m_v));
                     uint32_t h = get_hash((ASR::asr_t*)fn);
-                    if (fn->m_deftype == ASR::deftypeType::Implementation) {
+                    if (ASRUtils::get_FunctionType(fn)->m_deftype == ASR::deftypeType::Implementation) {
                         tmp = llvm_symtab_fn[h];
                     } else {
                         // Must be an argument/chained procedure pass
@@ -6234,7 +6487,7 @@ public:
                             ASR::Function_t* func = down_cast<ASR::Function_t>(func_subrout);
                             orig_arg = EXPR2VAR(func->m_args[i]);
                         } else {
-                            LFORTRAN_ASSERT(false)
+                            LCOMPILERS_ASSERT(false)
                         }
                         if (orig_arg->m_abi == ASR::abiType::BindC) {
                             character_bindc = true;
@@ -6286,7 +6539,7 @@ public:
                                 ASR::Function_t* func = down_cast<ASR::Function_t>(func_subrout);
                                 orig_arg = EXPR2VAR(func->m_args[i]);
                             } else {
-                                LFORTRAN_ASSERT(false)
+                                LCOMPILERS_ASSERT(false)
                             }
                             if (orig_arg->m_abi == ASR::abiType::BindC
                                 && orig_arg->m_value_attr) {
@@ -6334,7 +6587,7 @@ public:
     void generate_flip_sign(ASR::call_arg_t* m_args) {
         this->visit_expr_wrapper(m_args[0].m_value, true);
         llvm::Value* signal = tmp;
-        LFORTRAN_ASSERT(m_args[1].m_value->type == ASR::exprType::Var);
+        LCOMPILERS_ASSERT(m_args[1].m_value->type == ASR::exprType::Var);
         ASR::Var_t* asr_var = ASR::down_cast<ASR::Var_t>(m_args[1].m_value);
         ASR::Variable_t* asr_variable = ASR::down_cast<ASR::Variable_t>(asr_var->m_v);
         uint32_t x_h = get_hash((ASR::asr_t*)asr_variable);
@@ -6422,15 +6675,16 @@ public:
             push_nested_stack(parent_function);
         }
         uint32_t h;
-        if (s->m_abi == ASR::abiType::LFortranModule) {
-            throw CodeGenError("Subroutine LFortran interfaces not implemented yet");
-        } else if (s->m_abi == ASR::abiType::Interactive) {
+        ASR::FunctionType_t* s_func_type = ASR::down_cast<ASR::FunctionType_t>(s->m_function_signature);
+        if (s_func_type->m_abi == ASR::abiType::LFortranModule) {
+            throw CodeGenError("Subroutine LCompilers interfaces not implemented yet");
+        } else if (s_func_type->m_abi == ASR::abiType::Interactive) {
             h = get_hash((ASR::asr_t*)s);
-        } else if (s->m_abi == ASR::abiType::Source) {
+        } else if (s_func_type->m_abi == ASR::abiType::Source) {
             h = get_hash((ASR::asr_t*)s);
-        } else if (s->m_abi == ASR::abiType::BindC) {
+        } else if (s_func_type->m_abi == ASR::abiType::BindC) {
             h = get_hash((ASR::asr_t*)s);
-        } else if (s->m_abi == ASR::abiType::Intrinsic) {
+        } else if (s_func_type->m_abi == ASR::abiType::Intrinsic) {
             h = get_hash((ASR::asr_t*)s);
         } else {
             throw CodeGenError("ABI type not implemented yet in SubroutineCall.");
@@ -6458,7 +6712,7 @@ public:
 
     void handle_bitwise_args(const ASR::FunctionCall_t& x, llvm::Value*& arg1,
                              llvm::Value*& arg2) {
-        LFORTRAN_ASSERT(x.n_args == 2);
+        LCOMPILERS_ASSERT(x.n_args == 2);
         tmp = nullptr;
         this->visit_expr_wrapper(x.m_args[0].m_value, true);
         arg1 = tmp;
@@ -6562,26 +6816,27 @@ public:
         }
         bool intrinsic_function = ASRUtils::is_intrinsic_function2(s);
         uint32_t h;
-        if (s->m_abi == ASR::abiType::Source && !intrinsic_function) {
+        ASR::FunctionType_t* s_func_type = ASR::down_cast<ASR::FunctionType_t>(s->m_function_signature);
+        if (s_func_type->m_abi == ASR::abiType::Source && !intrinsic_function) {
             h = get_hash((ASR::asr_t*)s);
-        } else if (s->m_abi == ASR::abiType::LFortranModule) {
-            throw CodeGenError("Function LFortran interfaces not implemented yet");
-        } else if (s->m_abi == ASR::abiType::Interactive) {
+        } else if (s_func_type->m_abi == ASR::abiType::LFortranModule) {
+            throw CodeGenError("Function LCompilers interfaces not implemented yet");
+        } else if (s_func_type->m_abi == ASR::abiType::Interactive) {
             h = get_hash((ASR::asr_t*)s);
-        } else if (s->m_abi == ASR::abiType::BindC) {
+        } else if (s_func_type->m_abi == ASR::abiType::BindC) {
             h = get_hash((ASR::asr_t*)s);
-        } else if (s->m_abi == ASR::abiType::Intrinsic || intrinsic_function) {
+        } else if (s_func_type->m_abi == ASR::abiType::Intrinsic || intrinsic_function) {
             std::string func_name = s->m_name;
             if( fname2arg_type.find(func_name) != fname2arg_type.end() ) {
                 h = get_hash((ASR::asr_t*)s);
             } else {
                 if (func_name == "len") {
                     args = convert_call_args(x);
-                    LFORTRAN_ASSERT(args.size() == 1)
+                    LCOMPILERS_ASSERT(args.size() == 3)
                     tmp = lfortran_str_len(args[0]);
                     return;
                 }
-                if( s->m_deftype == ASR::deftypeType::Interface ) {
+                if( ASRUtils::get_FunctionType(s)->m_deftype == ASR::deftypeType::Interface ) {
                     throw CodeGenError("Intrinsic '" + func_name + "' not implemented yet and compile time value is not available.");
                 } else {
                     h = get_hash((ASR::asr_t*)s);
@@ -6606,7 +6861,7 @@ public:
             std::vector<llvm::Value *> args2 = convert_call_args(x);
             args.insert(args.end(), args2.begin(), args2.end());
             ASR::ttype_t *return_var_type0 = EXPR2VAR(s->m_return_var)->m_type;
-            if (s->m_abi == ASR::abiType::BindC) {
+            if (ASRUtils::get_FunctionType(s)->m_abi == ASR::abiType::BindC) {
                 if (is_a<ASR::Complex_t>(*return_var_type0)) {
                     int a_kind = down_cast<ASR::Complex_t>(return_var_type0)->m_kind;
                     if (a_kind == 8) {
@@ -6629,7 +6884,7 @@ public:
                 tmp = CreateCallUtil(fn, args, return_var_type0);
             }
         }
-        if (s->m_abi == ASR::abiType::BindC) {
+        if (ASRUtils::get_FunctionType(s)->m_abi == ASR::abiType::BindC) {
             ASR::ttype_t *return_var_type0 = EXPR2VAR(s->m_return_var)->m_type;
             if (is_a<ASR::Complex_t>(*return_var_type0)) {
                 int a_kind = down_cast<ASR::Complex_t>(return_var_type0)->m_kind;
@@ -6702,7 +6957,7 @@ public:
             } else if( x.m_bound == ASR::arrayboundType::UBound ) {
                 bound_value = array_const->n_args;
             } else {
-                LFORTRAN_ASSERT(false);
+                LCOMPILERS_ASSERT(false);
             }
             tmp = llvm::ConstantInt::get(context, llvm::APInt(kind * 8, bound_value));
             return ;
@@ -6765,7 +7020,7 @@ Result<std::unique_ptr<LLVMModule>> asr_to_llvm(ASR::TranslationUnit_t &asr,
         diagnostics.diagnostics.push_back(e.d);
         return error;
     } catch (const CodeGenAbort &) {
-        LFORTRAN_ASSERT(diagnostics.has_error())
+        LCOMPILERS_ASSERT(diagnostics.has_error())
         Error error;
         return error;
     }
@@ -6785,4 +7040,4 @@ Result<std::unique_ptr<LLVMModule>> asr_to_llvm(ASR::TranslationUnit_t &asr,
     return std::make_unique<LLVMModule>(std::move(v.module));
 }
 
-} // namespace LFortran
+} // namespace LCompilers

@@ -279,7 +279,7 @@ class ASTVisitorVisitor1(ASDLVisitor):
             self.emit("template <class Visitor>")
             self.emit("static void visit_%s_t(const %s_t &x, Visitor &v) {" \
                     % (base, base))
-            self.emit(    "LFORTRAN_ASSERT(x.base.type == %sType::%s)" \
+            self.emit(    "LCOMPILERS_ASSERT(x.base.type == %sType::%s)" \
                     % (subs["mod"], base), 1)
             self.emit(    "switch (x.type) {", 1)
             for type_ in sum.types:
@@ -326,7 +326,7 @@ class ASTVisitorVisitor2(ASDLVisitor):
             self.emit("void visit_%s(const %s_t &b) { visit_%s_t(b, self()); }"\
                     % (base, base, base), 1)
             for type_ in sum.types:
-                self.emit("""void visit_%s(const %s_t & /* x */) { throw LFortran::LCompilersException("visit_%s() not implemented"); }""" \
+                self.emit("""void visit_%s(const %s_t & /* x */) { throw LCompilersException("visit_%s() not implemented"); }""" \
                         % (type_.name, type_.name, type_.name), 2)
 
 
@@ -422,8 +422,14 @@ class CallReplacerOnExpressionsVisitor(ASDLVisitor):
         self.emit("    Struct& self() { return static_cast<Struct&>(*this); }")
         self.emit("public:")
         self.emit("    ASR::expr_t** current_expr;")
+        self.emit("    SymbolTable* current_scope;")
         self.emit("")
         self.emit("    void call_replacer() {}")
+        self.emit("    void transform_stmts(ASR::stmt_t **&m_body, size_t &n_body) {")
+        self.emit("    for (size_t i = 0; i < n_body; i++) {", 1)
+        self.emit("        self().visit_stmt(*m_body[i]);", 1)
+        self.emit("    }", 1)
+        self.emit("    }")
         super(CallReplacerOnExpressionsVisitor, self).visitModule(mod)
         self.emit("};")
 
@@ -440,14 +446,34 @@ class CallReplacerOnExpressionsVisitor(ASDLVisitor):
 
     def make_visitor(self, name, fields):
         self.emit("void visit_%s(const %s_t &x) {" % (name, name), 1)
+        is_symtab_present = False
+        is_stmt_present = False
+        symtab_field_name = ""
+        for field in fields:
+            if field.type == "stmt":
+                is_stmt_present = True
+            if field.type == "symbol_table":
+                is_symtab_present = True
+                symtab_field_name = field.name
+            if is_stmt_present and is_symtab_present:
+                break
+        if is_stmt_present and name not in ("Assignment", "ForAllSingle"):
+            self.emit("    %s_t& xx = const_cast<%s_t&>(x);" % (name, name), 1)
         self.used = False
-        have_body = False
+
+        if is_symtab_present:
+            self.emit("SymbolTable* current_scope_copy = current_scope;", 2)
+            self.emit("current_scope = x.m_%s;" % symtab_field_name, 2)
+
         for field in fields:
             self.visitField(field)
         if not self.used:
             # Note: a better solution would be to change `&x` to `& /* x */`
             # above, but we would need to change emit to return a string.
             self.emit("if ((bool&)x) { } // Suppress unused warning", 2)
+
+        if is_symtab_present:
+            self.emit("current_scope = current_scope_copy;", 2)
         self.emit("}", 1)
 
     def insert_call_replacer_code(self, name, level, index=""):
@@ -462,6 +488,9 @@ class CallReplacerOnExpressionsVisitor(ASDLVisitor):
             field.type not in self.data.simple_types):
             level = 2
             if field.seq:
+                if field.type == "stmt":
+                    self.emit("self().transform_stmts(xx.m_%s, xx.n_%s);" % (field.name, field.name), level)
+                    return
                 self.used = True
                 self.emit("for (size_t i=0; i<x.n_%s; i++) {" % field.name, level)
                 if field.type in products:
@@ -535,7 +564,7 @@ class TreeVisitorVisitor(ASDLVisitor):
         self.emit(  "}", 1)
         self.emit(  "void dec_indent() {", 1)
         self.emit(      "indent_level--;", 2)
-        self.emit(      "LFORTRAN_ASSERT(indent_level >= 0);", 2)
+        self.emit(      "LCOMPILERS_ASSERT(indent_level >= 0);", 2)
         self.emit(      "indtd = indtd.substr(0, indent_level*indent_spaces);",2)
         self.emit(  "}", 1)
         self.mod = mod
@@ -768,9 +797,11 @@ class ExprStmtDuplicatorVisitor(ASDLVisitor):
     def __init__(self, stream, data):
         self.duplicate_stmt = []
         self.duplicate_expr = []
+        self.duplicate_ttype = []
         self.duplicate_case_stmt = []
         self.is_stmt = False
         self.is_expr = False
+        self.is_ttype = False
         self.is_case_stmt = False
         self.is_product = False
         super(ExprStmtDuplicatorVisitor, self).__init__(stream, data)
@@ -805,6 +836,13 @@ class ExprStmtDuplicatorVisitor(ASDLVisitor):
         self.duplicate_expr.append(("", 0))
         self.duplicate_expr.append(("    switch(x->type) {", 1))
 
+        self.duplicate_ttype.append(("    ASR::ttype_t* duplicate_ttype(ASR::ttype_t* x) {", 0))
+        self.duplicate_ttype.append(("    if( !x ) {", 1))
+        self.duplicate_ttype.append(("    return nullptr;", 2))
+        self.duplicate_ttype.append(("    }", 1))
+        self.duplicate_ttype.append(("", 0))
+        self.duplicate_ttype.append(("    switch(x->type) {", 1))
+
         self.duplicate_case_stmt.append(("    ASR::case_stmt_t* duplicate_case_stmt(ASR::case_stmt_t* x) {", 0))
         self.duplicate_case_stmt.append(("    if( !x ) {", 1))
         self.duplicate_case_stmt.append(("    return nullptr;", 2))
@@ -814,7 +852,7 @@ class ExprStmtDuplicatorVisitor(ASDLVisitor):
 
         super(ExprStmtDuplicatorVisitor, self).visitModule(mod)
         self.duplicate_stmt.append(("    default: {", 2))
-        self.duplicate_stmt.append(('    LFORTRAN_ASSERT_MSG(false, "Duplication of " + std::to_string(x->type) + " statement is not supported yet.");', 3))
+        self.duplicate_stmt.append(('    LCOMPILERS_ASSERT_MSG(false, "Duplication of " + std::to_string(x->type) + " statement is not supported yet.");', 3))
         self.duplicate_stmt.append(("    }", 2))
         self.duplicate_stmt.append(("    }", 1))
         self.duplicate_stmt.append(("", 0))
@@ -822,15 +860,23 @@ class ExprStmtDuplicatorVisitor(ASDLVisitor):
         self.duplicate_stmt.append(("    }", 0))
 
         self.duplicate_expr.append(("    default: {", 2))
-        self.duplicate_expr.append(('    LFORTRAN_ASSERT_MSG(false, "Duplication of " + std::to_string(x->type) + " expression is not supported yet.");', 3))
+        self.duplicate_expr.append(('    LCOMPILERS_ASSERT_MSG(false, "Duplication of " + std::to_string(x->type) + " expression is not supported yet.");', 3))
         self.duplicate_expr.append(("    }", 2))
         self.duplicate_expr.append(("    }", 1))
         self.duplicate_expr.append(("", 0))
         self.duplicate_expr.append(("    return nullptr;", 1))
         self.duplicate_expr.append(("    }", 0))
 
+        self.duplicate_ttype.append(("    default: {", 2))
+        self.duplicate_ttype.append(('    LCOMPILERS_ASSERT_MSG(false, "Duplication of " + std::to_string(x->type) + " type is not supported yet.");', 3))
+        self.duplicate_ttype.append(("    }", 2))
+        self.duplicate_ttype.append(("    }", 1))
+        self.duplicate_ttype.append(("", 0))
+        self.duplicate_ttype.append(("    return nullptr;", 1))
+        self.duplicate_ttype.append(("    }", 0))
+
         self.duplicate_case_stmt.append(("    default: {", 2))
-        self.duplicate_case_stmt.append(('    LFORTRAN_ASSERT_MSG(false, "Duplication of " + std::to_string(x->type) + " case statement is not supported yet.");', 3))
+        self.duplicate_case_stmt.append(('    LCOMPILERS_ASSERT_MSG(false, "Duplication of " + std::to_string(x->type) + " case statement is not supported yet.");', 3))
         self.duplicate_case_stmt.append(("    }", 2))
         self.duplicate_case_stmt.append(("    }", 1))
         self.duplicate_case_stmt.append(("", 0))
@@ -841,6 +887,9 @@ class ExprStmtDuplicatorVisitor(ASDLVisitor):
             self.emit(line, level=level)
         self.emit("")
         for line, level in self.duplicate_expr:
+            self.emit(line, level=level)
+        self.emit("")
+        for line, level in self.duplicate_ttype:
             self.emit(line, level=level)
         self.emit("")
         for line, level in self.duplicate_case_stmt:
@@ -856,8 +905,9 @@ class ExprStmtDuplicatorVisitor(ASDLVisitor):
     def visitSum(self, sum, *args):
         self.is_stmt = args[0] == 'stmt'
         self.is_expr = args[0] == 'expr'
+        self.is_ttype = args[0] == "ttype"
         self.is_case_stmt = args[0] == 'case_stmt'
-        if self.is_stmt or self.is_expr or self.is_case_stmt:
+        if self.is_stmt or self.is_expr or self.is_case_stmt or self.is_ttype:
             for tp in sum.types:
                 self.visit(tp, *args)
 
@@ -904,6 +954,10 @@ class ExprStmtDuplicatorVisitor(ASDLVisitor):
                 self.duplicate_expr.append(("    }", 3))
             self.duplicate_expr.append(("    return down_cast<ASR::expr_t>(self().duplicate_%s(down_cast<ASR::%s_t>(x)));" % (name, name), 3))
             self.duplicate_expr.append(("    }", 2))
+        elif self.is_ttype:
+            self.duplicate_ttype.append(("    case ASR::ttypeType::%s: {" % name, 2))
+            self.duplicate_ttype.append(("    return down_cast<ASR::ttype_t>(self().duplicate_%s(down_cast<ASR::%s_t>(x)));" % (name, name), 3))
+            self.duplicate_ttype.append(("    }", 2))
         elif self.is_case_stmt:
             self.duplicate_case_stmt.append(("    case ASR::case_stmtType::%s: {" % name, 2))
             self.duplicate_case_stmt.append(("    return down_cast<ASR::case_stmt_t>(self().duplicate_%s(down_cast<ASR::%s_t>(x)));" % (name, name), 3))
@@ -920,7 +974,8 @@ class ExprStmtDuplicatorVisitor(ASDLVisitor):
             field.type == "do_loop_head" or
             field.type == "array_index" or
             field.type == "alloc_arg" or
-            field.type == "case_stmt"):
+            field.type == "case_stmt" or
+            field.type == "ttype"):
             level = 2
             if field.seq:
                 self.used = True
@@ -1026,7 +1081,7 @@ class ExprBaseReplacerVisitor(ASDLVisitor):
         super(ExprBaseReplacerVisitor, self).visitModule(mod)
 
         self.replace_expr.append(("    default: {", 2))
-        self.replace_expr.append(('    LFORTRAN_ASSERT_MSG(false, "Duplication of " + std::to_string(x->type) + " expression is not supported yet.");', 3))
+        self.replace_expr.append(('    LCOMPILERS_ASSERT_MSG(false, "Duplication of " + std::to_string(x->type) + " expression is not supported yet.");', 3))
         self.replace_expr.append(("    }", 2))
         self.replace_expr.append(("    }", 1))
         self.replace_expr.append(("", 0))
@@ -1078,10 +1133,12 @@ class ExprBaseReplacerVisitor(ASDLVisitor):
                 self.used = True
                 self.emit("for (size_t i = 0; i < x->n_%s; i++) {" % field.name, level)
                 if field.type == "call_arg":
-                    self.emit("    ASR::expr_t** current_expr_copy_%d = current_expr;" % (self.current_expr_copy_variable_count), level)
-                    self.emit("    current_expr = &(x->m_%s[i].m_value);" % (field.name), level)
-                    self.emit("    self().replace_expr(x->m_%s[i].m_value);"%(field.name), level)
-                    self.emit("    current_expr = current_expr_copy_%d;" % (self.current_expr_copy_variable_count), level)
+                    self.emit("    if (x->m_%s[i].m_value != nullptr) {" % (field.name), level)
+                    self.emit("    ASR::expr_t** current_expr_copy_%d = current_expr;" % (self.current_expr_copy_variable_count), level + 1)
+                    self.emit("    current_expr = &(x->m_%s[i].m_value);" % (field.name), level + 1)
+                    self.emit("    self().replace_expr(x->m_%s[i].m_value);"%(field.name), level + 1)
+                    self.emit("    current_expr = current_expr_copy_%d;" % (self.current_expr_copy_variable_count), level + 1)
+                    self.emit("    }", level)
                     self.current_expr_copy_variable_count += 1
                 self.emit("}", level)
             else:
@@ -1127,7 +1184,7 @@ class StmtBaseReplacerVisitor(ASDLVisitor):
         super(StmtBaseReplacerVisitor, self).visitModule(mod)
 
         self.replace_stmt.append(("    default: {", 2))
-        self.replace_stmt.append(('    LFORTRAN_ASSERT_MSG(false, "Replacement of " + std::to_string(x->type) + " statement is not supported yet.");', 3))
+        self.replace_stmt.append(('    LCOMPILERS_ASSERT_MSG(false, "Replacement of " + std::to_string(x->type) + " statement is not supported yet.");', 3))
         self.replace_stmt.append(("    }", 2))
         self.replace_stmt.append(("    }", 1))
         self.replace_stmt.append(("", 0))
@@ -1208,7 +1265,7 @@ class PickleVisitorVisitor(ASDLVisitor):
         self.emit(  "}",1)
         self.emit(  "void dec_indent() {", 1)
         self.emit(      "indent_level--;", 2)
-        self.emit(      "LFORTRAN_ASSERT(indent_level >= 0);", 2)
+        self.emit(      "LCOMPILERS_ASSERT(indent_level >= 0);", 2)
         self.emit(      "indented = std::string(indent_level*indent_spaces, ' ');",2)
         self.emit(  "}",1)
         self.mod = mod
@@ -1503,7 +1560,7 @@ class JsonVisitorVisitor(ASDLVisitor):
         self.emit(  "}",1)
         self.emit(  "void dec_indent() {", 1)
         self.emit(      "indent_level--;", 2)
-        self.emit(      "LFORTRAN_ASSERT(indent_level >= 0);", 2)
+        self.emit(      "LCOMPILERS_ASSERT(indent_level >= 0);", 2)
         self.emit(      "indtd = std::string(indent_level*indent_spaces, ' ');",2)
         self.emit(  "}",1)
         self.emit(  "void append_location(std::string &s, uint32_t first, uint32_t last) {", 1)
@@ -2163,12 +2220,12 @@ class DeserializationVisitorVisitor(ASDLVisitor):
                             # symbol table that was not constructed yet. If
                             # that ever happens, we would have to remember
                             # this and come back later to fix the pointer.
-                            lines.append("LFORTRAN_ASSERT(id_symtab_map.find(m_%s_counter) != id_symtab_map.end());" % f.name)
+                            lines.append("LCOMPILERS_ASSERT(id_symtab_map.find(m_%s_counter) != id_symtab_map.end());" % f.name)
                             lines.append("SymbolTable *m_%s = id_symtab_map[m_%s_counter];" % (f.name, f.name))
                         else:
                             # We construct a new table. It should not
                             # be present:
-                            lines.append("LFORTRAN_ASSERT(id_symtab_map.find(m_%s_counter) == id_symtab_map.end());" % f.name)
+                            lines.append("LCOMPILERS_ASSERT(id_symtab_map.find(m_%s_counter) == id_symtab_map.end());" % f.name)
                             lines.append("SymbolTable *m_%s = al.make_new<SymbolTable>(nullptr);" % (f.name))
                             lines.append("if (load_symtab_id) m_%s->counter = m_%s_counter;" % (f.name, f.name))
                             lines.append("id_symtab_map[m_%s_counter] = m_%s;" % (f.name, f.name))
@@ -2245,7 +2302,7 @@ class ExprTypeVisitor(ASDLVisitor):
         self.emit("""\
 static inline ASR::ttype_t* expr_type0(const ASR::expr_t *f)
 {
-    LFORTRAN_ASSERT(f != nullptr);
+    LCOMPILERS_ASSERT(f != nullptr);
     switch (f->type) {""")
 
         super(ExprTypeVisitor, self).visitModule(mod)
@@ -2278,9 +2335,11 @@ static inline ASR::ttype_t* expr_type0(const ASR::expr_t *f)
             ASR::symbol_t *s = ((ASR::%s_t*)f)->m_v;
             if (s->type == ASR::symbolType::ExternalSymbol) {
                 ASR::ExternalSymbol_t *e = ASR::down_cast<ASR::ExternalSymbol_t>(s);
-                LFORTRAN_ASSERT(e->m_external);
-                LFORTRAN_ASSERT(!ASR::is_a<ASR::ExternalSymbol_t>(*e->m_external));
+                LCOMPILERS_ASSERT(e->m_external);
+                LCOMPILERS_ASSERT(!ASR::is_a<ASR::ExternalSymbol_t>(*e->m_external));
                 s = e->m_external;
+            } else if (s->type == ASR::symbolType::Function) {
+                return ASR::down_cast<ASR::Function_t>(s)->m_function_signature;
             }
             return ASR::down_cast<ASR::Variable_t>(s)->m_type;
         }""" \
@@ -2316,7 +2375,7 @@ class ExprValueVisitor(ASDLVisitor):
         self.emit("""\
 static inline ASR::expr_t* expr_value0(ASR::expr_t *f)
 {
-    LFORTRAN_ASSERT(f != nullptr);
+    LCOMPILERS_ASSERT(f != nullptr);
     switch (f->type) {""")
 
         super(ExprValueVisitor, self).visitModule(mod)
@@ -2349,7 +2408,7 @@ static inline ASR::expr_t* expr_value0(ASR::expr_t *f)
             ASR::symbol_t *s = ((ASR::%s_t*)f)->m_v;
             if (s->type == ASR::symbolType::ExternalSymbol) {
                 ASR::ExternalSymbol_t *e = ASR::down_cast<ASR::ExternalSymbol_t>(s);
-                LFORTRAN_ASSERT(!ASR::is_a<ASR::ExternalSymbol_t>(*e->m_external));
+                LCOMPILERS_ASSERT(!ASR::is_a<ASR::ExternalSymbol_t>(*e->m_external));
                 s = e->m_external;
             }
             return ASR::down_cast<ASR::Variable_t>(s)->m_value;
@@ -2426,7 +2485,7 @@ HEAD = r"""#ifndef LFORTRAN_%(MOD2)s_H
 #include <libasr/asr_scopes.h>
 
 
-namespace LFortran::%(MOD)s {
+namespace LCompilers::%(MOD)s {
 
 enum %(mod)sType
 {
@@ -2451,8 +2510,8 @@ inline bool is_a(const U &x)
 template <class T, class U>
 static inline T* down_cast(const U *f)
 {
-    LFORTRAN_ASSERT(f != nullptr);
-    LFORTRAN_ASSERT(is_a<T>(*f));
+    LCOMPILERS_ASSERT(f != nullptr);
+    LCOMPILERS_ASSERT(is_a<T>(*f));
     return (T*)f;
 }
 
@@ -2468,7 +2527,7 @@ static inline T* down_cast2(const %(mod)s_t *f)
 
 """
 
-FOOT = r"""} // namespace LFortran::%(MOD)s
+FOOT = r"""} // namespace LCompilers::%(MOD)s
 
 #endif // LFORTRAN_%(MOD2)s_H
 """
@@ -2500,6 +2559,9 @@ def main(argv):
         subs["MOD"] = "LPython::AST"
         subs["mod"] = "ast"
         subs["lcompiler"] = "lpython"
+    elif subs["MOD"] == "AST":
+         subs["MOD"] = "LFortran::AST"
+         subs["lcompiler"] = "lfortran"
     else:
         subs["lcompiler"] = "lfortran"
     is_asr = (mod.name.upper() == "ASR")

@@ -8,7 +8,7 @@
 
 #include <libasr/codegen/x86_assembler.h>
 
-namespace LFortran {
+namespace LCompilers {
 
 void X86Assembler::save_binary(const std::string &filename) {
     {
@@ -88,8 +88,8 @@ void emit_exit(X86Assembler &a, const std::string &name,
 {
     a.add_label(name);
     // void exit(int status);
-    a.asm_mov_r32_imm32(LFortran::X86Reg::eax, 1); // sys_exit
-    a.asm_mov_r32_imm32(LFortran::X86Reg::ebx, exit_code); // exit code
+    a.asm_mov_r32_imm32(X86Reg::eax, 1); // sys_exit
+    a.asm_mov_r32_imm32(X86Reg::ebx, exit_code); // exit code
     a.asm_int_imm8(0x80); // syscall
 }
 
@@ -97,7 +97,7 @@ void emit_exit2(X86Assembler &a, const std::string &name)
 {
     a.add_label(name);
     // void exit();
-    a.asm_mov_r32_imm32(LFortran::X86Reg::eax, 1); // sys_exit
+    a.asm_mov_r32_imm32(X86Reg::eax, 1); // sys_exit
     a.asm_pop_r32(X86Reg::ebx); // exit code on stack, move to register
     a.asm_int_imm8(0x80); // syscall
 }
@@ -129,10 +129,10 @@ void emit_print(X86Assembler &a, const std::string &msg_label,
     uint32_t size)
 {
     // ssize_t write(int fd, const void *buf, size_t count);
-    a.asm_mov_r32_imm32(LFortran::X86Reg::eax, 4); // sys_write
-    a.asm_mov_r32_imm32(LFortran::X86Reg::ebx, 1); // fd (stdout)
-    a.asm_mov_r32_label(LFortran::X86Reg::ecx, msg_label); // buf
-    a.asm_mov_r32_imm32(LFortran::X86Reg::edx, size); // count
+    a.asm_mov_r32_imm32(X86Reg::eax, 4); // sys_write
+    a.asm_mov_r32_imm32(X86Reg::ebx, 1); // fd (stdout)
+    a.asm_mov_r32_label(X86Reg::ecx, msg_label); // buf
+    a.asm_mov_r32_imm32(X86Reg::edx, size); // count
     a.asm_int_imm8(0x80);
 }
 
@@ -213,8 +213,6 @@ void emit_print_int(X86Assembler &a, const std::string &name)
     a.asm_mov_r32_r32(X86Reg::esp, X86Reg::ebp);
     a.asm_pop_r32(X86Reg::ebp);
     a.asm_ret();
-
-    emit_data_string(a, "string_neg", "-"); // - symbol for printing negative ints
 }
 
 void emit_print_float(X86Assembler &a, const std::string &name) {
@@ -234,7 +232,7 @@ void emit_print_float(X86Assembler &a, const std::string &name) {
     // print the integral part
     {
         a.asm_call_label("print_i32");
-        a.asm_pop_r32(X86Reg::eax); // increament the stack pointer and thus remove space
+        a.asm_add_r32_imm32(X86Reg::esp, 4); // increment stack top and thus pop the value to be set
     }
 
     // print dot
@@ -255,7 +253,7 @@ void emit_print_float(X86Assembler &a, const std::string &name) {
         // print the fractional part
         {
             a.asm_call_label("print_i32");
-            a.asm_pop_r32(X86Reg::eax); // increament the stack pointer and thus remove space
+            a.asm_add_r32_imm32(X86Reg::esp, 4); // increment stack top and thus pop the value to be set
         }
     }
 
@@ -263,8 +261,6 @@ void emit_print_float(X86Assembler &a, const std::string &name) {
     a.asm_mov_r32_r32(X86Reg::esp, X86Reg::ebp);
     a.asm_pop_r32(X86Reg::ebp);
     a.asm_ret();
-
-    emit_data_string(a, "string_dot", "."); // - symbol for printing floats
 }
 
 /************************* 64-bit functions **************************/
@@ -330,8 +326,8 @@ void emit_elf64_footer(X86Assembler &a) {
 void emit_exit_64(X86Assembler &a, std::string name, int exit_code) {
     a.add_label(name);
     // void exit(int status);
-    a.asm_mov_r64_imm64(LFortran::X64Reg::rax, 60); // sys_exit
-    a.asm_mov_r64_imm64(LFortran::X64Reg::rdi, exit_code); // exit code
+    a.asm_mov_r64_imm64(LCompilers::X64Reg::rax, 60); // sys_exit
+    a.asm_mov_r64_imm64(LCompilers::X64Reg::rdi, exit_code); // exit code
     a.asm_syscall(); // syscall
 }
 
@@ -395,7 +391,7 @@ void emit_print_int_64(X86Assembler &a, const std::string &name)
             a.asm_mov_r64_imm64(X64Reg::rdx, 1);
             a.asm_syscall();
         }
-        a.asm_pop_r64(X64Reg::r15); // increment stack pointer by pop operation
+        a.asm_add_r64_imm32(X64Reg::rsp, 8); // pop and increment stack pointer
         a.asm_jmp_label("_print_i64_digit");
 
     a.add_label("_print_i64_end");
@@ -415,13 +411,36 @@ void emit_print_double(X86Assembler &a, const std::string &name) {
 
     X64Reg base = X64Reg::rbp;
     a.asm_movsd_r64_m64(X64FReg::xmm0, &base, nullptr, 1, 16); // load argument into floating-point register
+
+    // if z >= 0 then print it
+    a.asm_mov_r64_imm64(X64Reg::rax, 0);
+    a.asm_cvtsi2sd_r64_r64(X64FReg::xmm1, X64Reg::rax);
+    a.asm_cmpsd_r64_r64(X64FReg::xmm0, X64FReg::xmm1, Fcmp::ge);
+    a.asm_pmovmskb_r32_r64(X86Reg::eax, X64FReg::xmm0);
+    a.asm_and_r64_imm8(X64Reg::rax, 1);
+    a.asm_movsd_r64_m64(X64FReg::xmm0, &base, nullptr, 1, 16); // load argument back into floating-point register
+    a.asm_cmp_r64_imm8(X64Reg::rax, 1);
+    a.asm_je_label("_print_float_int_part");
+
+    {
+        // the float to be printed is < 0, so print '-' symbol and
+        // multiply the float with -1
+        emit_print_64(a, "string_neg", 1);
+
+        a.asm_mov_r64_imm64(X64Reg::rax, 1);
+        a.asm_neg_r64(X64Reg::rax);
+        a.asm_cvtsi2sd_r64_r64(X64FReg::xmm1, X64Reg::rax);
+        a.asm_mulsd_r64_r64(X64FReg::xmm0, X64FReg::xmm1);
+    }
+
+    a.add_label("_print_float_int_part");
     a.asm_cvttsd2si_r64_r64(X64Reg::rax, X64FReg::xmm0);
     a.asm_push_r64(X64Reg::rax);
 
     // print the integral part
     {
         a.asm_call_label("print_i64");
-        a.asm_pop_r64(X64Reg::rax); // remove the passed argument to print_i64
+        a.asm_add_r64_imm32(X64Reg::rsp, 8); // pop and increment stack pointer
     }
 
     // print dot
@@ -436,13 +455,46 @@ void emit_print_double(X86Assembler &a, const std::string &name) {
         a.asm_cvtsi2sd_r64_r64(X64FReg::xmm1, X64Reg::rax);
         a.asm_mulsd_r64_r64(X64FReg::xmm0, X64FReg::xmm1);
         a.asm_cvttsd2si_r64_r64(X64Reg::rax, X64FReg::xmm0);
-        a.asm_push_r64(X64Reg::rax);
 
-        // print the fractional part
-        {
-            a.asm_call_label("print_i64");
-            a.asm_pop_r64(X64Reg::rax); // pop the passed argument
-        }
+        a.asm_mov_r64_r64(X64Reg::r15, X64Reg::rax); // keep a safe copy in r15
+        a.asm_mov_r64_imm64(X64Reg::r8, 8); // 8 digits after decimal point to be printed
+        a.asm_mov_r64_imm64(X64Reg::r10, 10); // 10 as divisor
+
+        // count the number of digits available in the fractional part
+        a.add_label("_count_fract_part_digits_loop");
+            a.asm_mov_r64_imm64(X64Reg::rdx, 0);
+            a.asm_div_r64(X64Reg::r10);
+            a.asm_dec_r64(X64Reg::r8);
+            a.asm_cmp_r64_imm8(X64Reg::rax, 0);
+            a.asm_je_label("_print_fract_part_initial_zeroes_loop_head");
+            a.asm_jmp_label("_count_fract_part_digits_loop");
+
+        a.add_label("_print_fract_part_initial_zeroes_loop_head");
+            a.asm_mov_r64_imm64(X64Reg::rax, 48);
+            a.asm_push_r64(X64Reg::rax); // push zero ascii value on stack top
+
+        a.add_label("_print_fract_part_initial_zeroes_loop");
+            a.asm_cmp_r64_imm8(X64Reg::r8, 0);
+            a.asm_je_label("_print_fract_part");
+            {
+                // write() syscall
+                a.asm_mov_r64_imm64(X64Reg::rax, 1);
+                a.asm_mov_r64_imm64(X64Reg::rdi, 1);
+                a.asm_mov_r64_r64(X64Reg::rsi, X64Reg::rsp);
+                a.asm_mov_r64_imm64(X64Reg::rdx, 1);
+                a.asm_syscall();
+            }
+            a.asm_dec_r64(X64Reg::r8);
+            a.asm_jmp_label("_print_fract_part_initial_zeroes_loop");
+
+        a.add_label("_print_fract_part");
+            a.asm_pop_r64(X64Reg::rax); // pop the zero ascii value from stack top
+            a.asm_push_r64(X64Reg::r15);
+            // print the fractional part
+            {
+                a.asm_call_label("print_i64");
+                a.asm_add_r64_imm32(X64Reg::rsp, 8); // pop and increment stack pointer
+            }
     }
 
     // Restore stack
