@@ -49,7 +49,7 @@ Old Link: https://www.systutorials.com/go/intel-x86-64-reference-manual/
 #    define EMIT_VAR_SIZE(a)
 #endif
 
-namespace LFortran {
+namespace LCompilers {
 
 enum X86Reg : uint8_t {
     eax = 0,
@@ -186,6 +186,15 @@ static std::string r2s(X64FReg xmm) {
     }
 }
 
+enum Fcmp : uint8_t {
+    eq = 0,
+    gt = 6, // (NLE in docs)
+    ge = 5, // (NLT in docs)
+    lt = 1,
+    le = 2,
+    ne = 4
+};
+
 static std::string m2s(X64Reg *base, X64Reg *index, uint8_t scale, int64_t disp) {
     std::string r;
     r = "[";
@@ -295,17 +304,17 @@ static void insert_uint16(Vec<uint8_t> &code, size_t pos, uint16_t i16) {
 
 // Implements table 2-2 in [1].
 static uint8_t ModRM_byte(uint8_t mode, uint8_t reg, uint8_t rm) {
-    LFORTRAN_ASSERT(mode <= 3);
-    LFORTRAN_ASSERT(reg <= 7);
-    LFORTRAN_ASSERT(rm <= 7);
+    LCOMPILERS_ASSERT(mode <= 3);
+    LCOMPILERS_ASSERT(reg <= 7);
+    LCOMPILERS_ASSERT(rm <= 7);
     return (mode << 6) | (reg << 3) | rm;
 }
 
 // Implements table 2-3 in [1].
 static uint8_t SIB_byte(uint8_t base, uint8_t index, uint8_t scale_index) {
-    LFORTRAN_ASSERT(base <= 7);
-    LFORTRAN_ASSERT(index <= 7);
-    LFORTRAN_ASSERT(scale_index <= 3);
+    LCOMPILERS_ASSERT(base <= 7);
+    LCOMPILERS_ASSERT(index <= 7);
+    LCOMPILERS_ASSERT(scale_index <= 3);
     return (scale_index << 6) | (index << 3) | base;
 }
 
@@ -321,7 +330,7 @@ static void ModRM_SIB_disp_bytes(Vec<uint8_t> &code, Allocator &al,
     }
     if (mod == 0b01) {
         // disp8 is present
-        LFORTRAN_ASSERT(-128 <= disp && disp < 128);
+        LCOMPILERS_ASSERT(-128 <= disp && disp < 128);
         uint8_t disp8 = disp;
         code.push_back(al, disp8);
     } else if ((mod == 0b00 && (rm==0b101 || base==0b101)) || (mod == 0b10)) {
@@ -530,7 +539,7 @@ public:
 
     // Does not touch undefined_positions, symbol must be defined
     Symbol &get_defined_symbol(const std::string &name) {
-        LFORTRAN_ASSERT(m_symbols.find(name) != m_symbols.end());
+        LCOMPILERS_ASSERT(m_symbols.find(name) != m_symbols.end());
         return m_symbols[name];
     }
 
@@ -766,13 +775,6 @@ public:
         EMIT("ret");
     }
 
-    void asm_xor_r32_r32(X86Reg r32, X86Reg s32) {
-        m_code.push_back(m_al, 0x31);
-        modrm_sib_disp(m_code, m_al,
-                s32, &r32, nullptr, 1, 0, false);
-        EMIT("xor " + r2s(r32) + ", " + r2s(s32));
-    }
-
     void asm_mov_r32_imm32(X86Reg r32, uint32_t imm32) {
         m_code.push_back(m_al, 0xb8 + r32);
         push_back_uint32(m_code, m_al, imm32);
@@ -780,10 +782,10 @@ public:
     }
 
     uint8_t rex(uint8_t W, uint8_t R, uint8_t X, uint8_t B) {
-        LFORTRAN_ASSERT(W <= 1);
-        LFORTRAN_ASSERT(R <= 1);
-        LFORTRAN_ASSERT(X <= 1);
-        LFORTRAN_ASSERT(B <= 1);
+        LCOMPILERS_ASSERT(W <= 1);
+        LCOMPILERS_ASSERT(R <= 1);
+        LCOMPILERS_ASSERT(X <= 1);
+        LCOMPILERS_ASSERT(B <= 1);
         return (0b01000000 | (W << 3) | (R << 2) | (X << 1) | B);
     }
 
@@ -897,9 +899,27 @@ public:
         EMIT("sub " + r2s(r32) + ", " + i2s(imm8));
     }
 
+    void asm_sub_r32_imm32(X86Reg r32, uint32_t imm32) {
+        m_code.push_back(m_al, 0x81);
+        modrm_sib_disp(m_code, m_al,
+                X86Reg::ebp, &r32, nullptr, 1, 0, false);
+        push_back_uint32(m_code, m_al, imm32);
+        EMIT("sub " + r2s(r32) + ", " + i2s(imm32));
+    }
+
+    void asm_sub_r64_imm32(X64Reg r64, uint32_t imm32) {
+        X86Reg r32 = X86Reg(r64 & 7);
+        m_code.push_back(m_al, rex(1, 0, 0, r64 >> 3));
+        m_code.push_back(m_al, 0x81);
+        modrm_sib_disp(m_code, m_al,
+                X86Reg::ebp, &r32, nullptr, 1, 0, false);
+        push_back_uint32(m_code, m_al, imm32);
+        EMIT("sub " + r2s(r64) + ", " + i2s(imm32));
+    }
+
     void asm_sub_r64_r64(X64Reg r64, X64Reg s64) {
         X86Reg r32 = X86Reg(r64 & 7), s32 = X86Reg(s64 & 7);
-        m_code.push_back(m_al, rex(1, r64 >> 3, 0, s64 >> 3));
+        m_code.push_back(m_al, rex(1, s64 >> 3, 0, r64 >> 3));
         m_code.push_back(m_al, 0x29);
         modrm_sib_disp(m_code, m_al,
                 s32, &r32, nullptr, 1, 0, false);
@@ -944,7 +964,7 @@ public:
 
     void asm_cmp_r64_r64(X64Reg r64, X64Reg s64) {
         X86Reg r32 = X86Reg(r64 & 7), s32 = X86Reg(s64 & 7);
-        m_code.push_back(m_al, rex(1, r64 >> 3, 0, s64 >> 3));
+        m_code.push_back(m_al, rex(1, s64 >> 3, 0, r64 >> 3));
         m_code.push_back(m_al, 0x39);
         modrm_sib_disp(m_code, m_al,
                 s32, &r32, nullptr, 1, 0, false);
@@ -956,6 +976,19 @@ public:
         modrm_sib_disp(m_code, m_al,
                 s32, &r32, nullptr, 1, 0, false);
         EMIT("cmp " + r2s(r32) + ", " + r2s(s32));
+    }
+
+    // CMPSD—Compare Scalar Double Precision Floating-Point Value
+    void asm_cmpsd_r64_r64(X64FReg r64, X64FReg s64, uint8_t imm8) {
+        X86Reg r32 = X86Reg(r64 & 7), s32 = X86Reg(s64 & 7);
+        m_code.push_back(m_al, 0xf2);
+        m_code.push_back(m_al, rex(1, r64 >> 3, 0, s64 >> 3));
+        m_code.push_back(m_al, 0x0f);
+        m_code.push_back(m_al, 0xc2);
+        modrm_sib_disp(m_code, m_al,
+                r32, &s32, nullptr, 1, 0, false);
+        m_code.push_back(m_al, imm8);
+        EMIT("cmpsd " + r2s(r64) + ", " + r2s(s64) + ", " + i2s(imm8));
     }
 
     void asm_jmp_imm8(uint8_t imm8) {
@@ -1153,6 +1186,15 @@ public:
         EMIT("lea " + r2s(r32) + ", " + m2s(base, index, scale, disp));
     }
 
+    void asm_and_r64_imm8(X64Reg r64, uint8_t imm8) {
+        X86Reg r32 = X86Reg(r64 & 7);
+        m_code.push_back(m_al, rex(1, 0, 0, r64 >> 3));
+        m_code.push_back(m_al, 0x83);
+        modrm_sib_disp(m_code, m_al, X86Reg::esp, &r32, nullptr, 1, 0, false);
+        m_code.push_back(m_al, imm8);
+        EMIT("and " + r2s(r32) + ", " + i2s(imm8));
+    }
+
     void asm_and_r32_imm32(X86Reg r32, uint32_t imm32) {
         if (r32 == X86Reg::eax) {
             m_code.push_back(m_al, 0x25);
@@ -1163,10 +1205,85 @@ public:
         EMIT("and " + r2s(r32) + ", " + i2s(imm32));
     }
 
+    void asm_and_r64_r64(X64Reg r64, X64Reg s64) {
+        X86Reg r32 = X86Reg(r64 & 7), s32 = X86Reg(s64 & 7);
+        m_code.push_back(m_al, rex(1, r64 >> 3, 0, s64 >> 3));
+        m_code.push_back(m_al, 0x23);
+        modrm_sib_disp(m_code, m_al, r32, &s32, nullptr, 1, 0, false);
+        EMIT("and " + r2s(r64) + ", " + r2s(s64));
+    }
+
+    void asm_and_r32_r32(X86Reg r32, X86Reg s32) {
+        m_code.push_back(m_al, 0x23);
+        modrm_sib_disp(m_code, m_al, r32, &s32, nullptr, 1, 0, false);
+        EMIT("and " + r2s(r32) + ", " + r2s(r32));
+    }
+
+    void asm_or_r64_r64(X64Reg r64, X64Reg s64) {
+        X86Reg r32 = X86Reg(r64 & 7), s32 = X86Reg(s64 & 7);
+        m_code.push_back(m_al, rex(1, r64 >> 3, 0, s64 >> 3));
+        m_code.push_back(m_al, 0x0B);
+        modrm_sib_disp(m_code, m_al, r32, &s32, nullptr, 1, 0, false);
+        EMIT("or " + r2s(r64) + ", " + r2s(s64));
+    }
+
+    void asm_or_r32_r32(X86Reg r32, X86Reg s32) {
+        m_code.push_back(m_al, 0x0B);
+        modrm_sib_disp(m_code, m_al, r32, &s32, nullptr, 1, 0, false);
+        EMIT("or " + r2s(r32) + ", " + r2s(r32));
+    }
+
+    void asm_xor_r64_r64(X64Reg r64, X64Reg s64) {
+        X86Reg r32 = X86Reg(r64 & 7), s32 = X86Reg(s64 & 7);
+        m_code.push_back(m_al, rex(1, r64 >> 3, 0, s64 >> 3));
+        m_code.push_back(m_al, 0x33);
+        modrm_sib_disp(m_code, m_al, r32, &s32, nullptr, 1, 0, false);
+        EMIT("xor " + r2s(r64) + ", " + r2s(s64));
+    }
+
+    void asm_xor_r32_r32(X86Reg r32, X86Reg s32) {
+        m_code.push_back(m_al, 0x31);
+        modrm_sib_disp(m_code, m_al,
+                s32, &r32, nullptr, 1, 0, false);
+        EMIT("xor " + r2s(r32) + ", " + r2s(s32));
+    }
+
     void asm_syscall() {
         m_code.push_back(m_al, 0x0F);
         m_code.push_back(m_al, 0x05);
         EMIT("syscall");
+    }
+
+    // SHL - Shift Logical/Unsigned Left
+    void asm_shl_r64_cl(X64Reg r64) {
+        X86Reg r32 = X86Reg(r64 & 7);
+        m_code.push_back(m_al, rex(1, 0, 0, r64 >> 3));
+        m_code.push_back(m_al, 0xD3);
+        modrm_sib_disp(m_code, m_al, X86Reg::esp, &r32, nullptr, 1, 0, false);
+        EMIT("shl " + r2s(r64) + ", cl");
+    }
+
+    // SHL - Shift Logical/Unsigned Left
+    void asm_shl_r32_cl(X86Reg r32) {
+        m_code.push_back(m_al, 0xD3);
+        modrm_sib_disp(m_code, m_al, X86Reg::esp, &r32, nullptr, 1, 0, false);
+        EMIT("shl " + r2s(r32) + ", cl");
+    }
+
+    // SAR - Shift Arithmetic/Signed Right
+    void asm_sar_r64_cl(X64Reg r64) {
+        X86Reg r32 = X86Reg(r64 & 7);
+        m_code.push_back(m_al, rex(1, 0, 0, r64 >> 3));
+        m_code.push_back(m_al, 0xD3);
+        modrm_sib_disp(m_code, m_al, X86Reg::edi, &r32, nullptr, 1, 0, false);
+        EMIT("sar " + r2s(r64) + ", cl");
+    }
+
+    // SAR - Shift Arithmetic/Signed Right
+    void asm_sar_r32_cl(X86Reg r32) {
+        m_code.push_back(m_al, 0xD3);
+        modrm_sib_disp(m_code, m_al, X86Reg::edi, &r32, nullptr, 1, 0, false);
+        EMIT("sar " + r2s(r32) + ", cl");
     }
 
     void asm_fld_m32(X86Reg *base, X86Reg *index,
@@ -1337,6 +1454,42 @@ public:
         modrm_sib_disp(m_code, m_al,
                 r32, &s32, nullptr, 1, 0, false);
         EMIT("cvttsd2si " + r2s(r64) + ", " + r2s(s64));
+    }
+
+    // PMOVMSKB—Move Byte Mask
+    // Creates a mask made up of the most significant bit of each byte
+    // of the source operand (second operand) and stores the result in the low byte
+    // or word of the destination operand (first operand)
+    void asm_pmovmskb_r32_r64(X86Reg r32, X64FReg s64) {
+        X86Reg s32 = X86Reg(s64 & 7);
+        m_code.push_back(m_al, rex(1, 0, 0, s64 >> 3));
+        m_code.push_back(m_al, 0x66);
+        m_code.push_back(m_al, 0x0f);
+        m_code.push_back(m_al, 0xd7);
+        modrm_sib_disp(m_code, m_al, r32, &s32, nullptr, 1, 0, false);
+        EMIT("pmovmskb " + r2s(r32) + ", " + r2s(s64));
+    }
+
+    // UCOMISD—Unordered Compare Scalar Double Precision Floating-Point Values and Set EFLAGS
+    void asm_ucomisd_r64_r64(X64FReg r64, X64FReg s64) {
+        X86Reg r32 = X86Reg(r64 & 7), s32 = X86Reg(s64 & 7);
+        m_code.push_back(m_al, rex(1, r64 >> 3, 0, s64 >> 3));
+        m_code.push_back(m_al, 0x66);
+        m_code.push_back(m_al, 0x0f);
+        m_code.push_back(m_al, 0x2e);
+        modrm_sib_disp(m_code, m_al, r32, &s32, nullptr, 1, 0, false);
+        EMIT("ucomisd " + r2s(r64) + ", " + r2s(s64));
+    }
+
+    // COMISD—Compare Scalar Ordered Double Precision Floating-Point Values and Set EFLAGS
+    void asm_comisd_r64_r64(X64FReg r64, X64FReg s64) {
+        X86Reg r32 = X86Reg(r64 & 7), s32 = X86Reg(s64 & 7);
+        m_code.push_back(m_al, rex(1, r64 >> 3, 0, s64 >> 3));
+        m_code.push_back(m_al, 0x66);
+        m_code.push_back(m_al, 0x0f);
+        m_code.push_back(m_al, 0x2f);
+        modrm_sib_disp(m_code, m_al, r32, &s32, nullptr, 1, 0, false);
+        EMIT("comisd " + r2s(r64) + ", " + r2s(s64));
     }
 };
 
