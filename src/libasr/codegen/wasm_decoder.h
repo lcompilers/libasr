@@ -109,10 +109,9 @@ class WASMDecoder {
         func_types.resize(al, no_of_func_types);
 
         for (uint32_t i = 0; i < no_of_func_types; i++) {
-            if (wasm_bytes[offset] != 0x60) {
+            if (read_b8(wasm_bytes, offset) != 0x60) {
                 throw CodeGenError("Invalid type section");
             }
-            offset++;
 
             // read result type 1
             uint32_t no_of_params = read_u32(wasm_bytes, offset);
@@ -234,6 +233,20 @@ class WASMDecoder {
             globals.p[i].type = read_b8(wasm_bytes, offset);
             globals.p[i].mut = read_b8(wasm_bytes, offset);
             globals.p[i].insts_start_idx = offset;
+
+            wasm::read_b8(wasm_bytes, offset);
+            switch (globals[i].type)
+            {
+                case 0x7F: globals.p[i].n32 = wasm::read_i32(wasm_bytes, offset); break;
+                case 0x7E: globals.p[i].n64 = wasm::read_i64(wasm_bytes, offset); break;
+                case 0x7D: globals.p[i].r32 = wasm::read_f32(wasm_bytes, offset); break;
+                case 0x7C: globals.p[i].r64 = wasm::read_f64(wasm_bytes, offset); break;
+                default: throw CodeGenError("decode_global_section: Unsupport global type"); break;
+            }
+
+            if (read_b8(wasm_bytes, offset) != 0x0B) {
+                throw AssemblerError("decode_global_section: Invalid byte for expr end");
+            }
         }
     }
 
@@ -336,41 +349,39 @@ class WASMDecoder {
                 "Expected: 0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00");
         }
         index += PREAMBLE_SIZE;
+        uint32_t expected_min_section_id = 1;
         while (index < wasm_bytes.size()) {
             uint32_t section_id = read_u32(wasm_bytes, index);
             uint32_t section_size = read_u32(wasm_bytes, index);
+            if (section_id < expected_min_section_id) {
+                throw CodeGenError("DecodeWASM: Invalid sectionId, expected id >= "
+                    + std::to_string(expected_min_section_id));
+            }
+            expected_min_section_id = section_id + 1;
             switch (section_id) {
                 case 1U:
                     decode_type_section(index);
-                    // exit(0);
                     break;
                 case 2U:
                     decode_imports_section(index);
-                    // exit(0);
                     break;
                 case 3U:
                     decode_function_section(index);
-                    // exit(0);
                     break;
                 case 5U:
                     decode_memory_section(index);
-                    // exit(0);
                     break;
                 case 6U:
                     decode_global_section(index);
-                    // exit(0);
                     break;
                 case 7U:
                     decode_export_section(index);
-                    // exit(0);
                     break;
                 case 10U:
                     decode_code_section(index);
-                    // exit(0)
                     break;
                 case 11U:
                     decode_data_section(index);
-                    // exit(0)
                     break;
                 default:
                     std::cout << "Unknown section id: " << section_id

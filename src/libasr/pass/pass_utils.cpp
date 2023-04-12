@@ -147,6 +147,10 @@ namespace LCompilers {
                     ASR::dimension_t* m_dims;
                     get_dim_rank(x_type, m_dims, n_dims);
                 }
+            } else if (ASR::is_a<ASR::StructInstanceMember_t>(*x)) {
+                ASR::ttype_t *x_type = ASR::down_cast<ASR::StructInstanceMember_t>(x)->m_type;
+                ASR::dimension_t* m_dims;
+                get_dim_rank(x_type, m_dims, n_dims);
             }
             return n_dims;
         }
@@ -201,9 +205,72 @@ namespace LCompilers {
             return array_ref;
         }
 
+        ASR::ttype_t* get_matching_type(ASR::expr_t* sibling, Allocator& al) {
+            ASR::ttype_t* sibling_type = ASRUtils::expr_type(sibling);
+            if( sibling->type != ASR::exprType::Var ) {
+                return sibling_type;
+            }
+            ASR::dimension_t* m_dims;
+            int ndims;
+            PassUtils::get_dim_rank(sibling_type, m_dims, ndims);
+            for( int i = 0; i < ndims; i++ ) {
+                if( m_dims[i].m_start != nullptr ||
+                    m_dims[i].m_length != nullptr ) {
+                    return sibling_type;
+                }
+            }
+            Vec<ASR::dimension_t> new_m_dims;
+            new_m_dims.reserve(al, ndims);
+            for( int i = 0; i < ndims; i++ ) {
+                ASR::dimension_t new_m_dim;
+                new_m_dim.loc = m_dims[i].loc;
+                new_m_dim.m_start = PassUtils::get_bound(sibling, i + 1, "lbound", al);
+                new_m_dim.m_length = ASRUtils::compute_length_from_start_end(al, new_m_dim.m_start,
+                                        PassUtils::get_bound(sibling, i + 1, "ubound", al));
+                new_m_dims.push_back(al, new_m_dim);
+            }
+            return PassUtils::set_dim_rank(sibling_type, new_m_dims.p, ndims, true, &al);
+    }
+
+    ASR::expr_t* create_var(int counter, std::string suffix, const Location& loc,
+                            ASR::ttype_t* var_type, Allocator& al, SymbolTable*& current_scope) {
+        ASR::expr_t* idx_var = nullptr;
+        std::string str_name = "__libasr__created__var__" + std::to_string(counter) + suffix;
+        char* idx_var_name = s2c(al, str_name);
+
+        if( current_scope->get_symbol(std::string(idx_var_name)) == nullptr ) {
+            ASR::asr_t* idx_sym = ASR::make_Variable_t(al, loc, current_scope, idx_var_name, nullptr, 0,
+                                                    ASR::intentType::Local, nullptr, nullptr, ASR::storage_typeType::Default,
+                                                    var_type, ASR::abiType::Source, ASR::accessType::Public, ASR::presenceType::Required,
+                                                    false);
+            current_scope->add_symbol(std::string(idx_var_name), ASR::down_cast<ASR::symbol_t>(idx_sym));
+            idx_var = ASRUtils::EXPR(ASR::make_Var_t(al, loc, ASR::down_cast<ASR::symbol_t>(idx_sym)));
+        } else {
+            ASR::symbol_t* idx_sym = current_scope->get_symbol(std::string(idx_var_name));
+            idx_var = ASRUtils::EXPR(ASR::make_Var_t(al, loc, idx_sym));
+        }
+
+        return idx_var;
+    }
+
+    ASR::expr_t* create_var(int counter, std::string suffix, const Location& loc,
+                            ASR::expr_t* sibling, Allocator& al, SymbolTable*& current_scope) {
+        ASR::ttype_t* var_type = get_matching_type(sibling, al);
+        return create_var(counter, suffix, loc, var_type, al, current_scope);
+    }
+
+    void fix_dimension(ASR::Cast_t* x, ASR::expr_t* arg_expr) {
+        ASR::ttype_t* x_type = const_cast<ASR::ttype_t*>(x->m_type);
+        ASR::ttype_t* arg_type = ASRUtils::expr_type(arg_expr);
+        ASR::dimension_t* m_dims;
+        int ndims;
+        PassUtils::get_dim_rank(arg_type, m_dims, ndims);
+        PassUtils::set_dim_rank(x_type, m_dims, ndims);
+    }
+
         void create_vars(Vec<ASR::expr_t*>& vars, int n_vars, const Location& loc,
                          Allocator& al, SymbolTable*& current_scope, std::string suffix,
-                         ASR::intentType intent) {
+                         ASR::intentType intent, ASR::presenceType presence) {
             vars.reserve(al, n_vars);
             for (int i = 1; i <= n_vars; i++) {
                 std::string idx_var_name = "__" + std::to_string(i) + suffix;
@@ -226,7 +293,7 @@ namespace LCompilers {
                     ASR::asr_t* idx_sym = ASR::make_Variable_t(al, loc, current_scope, var_name, nullptr, 0,
                                                             intent, nullptr, nullptr, ASR::storage_typeType::Default,
                                                             int32_type, ASR::abiType::Source, ASR::accessType::Public,
-                                                            ASR::presenceType::Required, false);
+                                                            presence, false);
                     current_scope->add_symbol(idx_var_name, ASR::down_cast<ASR::symbol_t>(idx_sym));
                     var = ASRUtils::EXPR(ASR::make_Var_t(al, loc, ASR::down_cast<ASR::symbol_t>(idx_sym)));
                 } else {
@@ -283,6 +350,51 @@ namespace LCompilers {
             }
         }
 
+        void create_idx_vars(Vec<ASR::expr_t*>& idx_vars, Vec<ASR::expr_t*>& loop_vars,
+                             std::vector<int>& loop_var_indices,
+                             Vec<ASR::expr_t*>& vars, Vec<ASR::expr_t*>& incs,
+                             const Location& loc, Allocator& al,
+                             SymbolTable*& current_scope, std::string suffix) {
+            idx_vars.reserve(al, incs.size());
+            loop_vars.reserve(al, 1);
+            for (size_t i = 0; i < incs.size(); i++) {
+                if( incs[i] == nullptr ) {
+                    idx_vars.push_back(al, vars[i]);
+                    continue;
+                }
+                std::string idx_var_name = "__" + std::to_string(i + 1) + suffix;
+                ASR::ttype_t* int32_type = ASRUtils::TYPE(ASR::make_Integer_t(al, loc, 4, nullptr, 0));
+                if( current_scope->get_symbol(idx_var_name) != nullptr ) {
+                    ASR::symbol_t* idx_sym = current_scope->get_symbol(idx_var_name);
+                    if( ASR::is_a<ASR::Variable_t>(*idx_sym) ) {
+                        ASR::Variable_t* idx_var = ASR::down_cast<ASR::Variable_t>(idx_sym);
+                        if( !(ASRUtils::check_equal_type(idx_var->m_type, int32_type) &&
+                              idx_var->m_symbolic_value == nullptr) ) {
+                            idx_var_name = current_scope->get_unique_name(idx_var_name);
+                        }
+                    } else {
+                        idx_var_name = current_scope->get_unique_name(idx_var_name);
+                    }
+                }
+                char* var_name = s2c(al, idx_var_name);;
+                ASR::expr_t* var = nullptr;
+                if( current_scope->get_symbol(idx_var_name) == nullptr ) {
+                    ASR::asr_t* idx_sym = ASR::make_Variable_t(al, loc, current_scope, var_name, nullptr, 0,
+                                            ASR::intentType::Local, nullptr, nullptr, ASR::storage_typeType::Default,
+                                            int32_type, ASR::abiType::Source, ASR::accessType::Public,
+                                            ASR::presenceType::Required, false);
+                    current_scope->add_symbol(idx_var_name, ASR::down_cast<ASR::symbol_t>(idx_sym));
+                    var = ASRUtils::EXPR(ASR::make_Var_t(al, loc, ASR::down_cast<ASR::symbol_t>(idx_sym)));
+                } else {
+                    ASR::symbol_t* idx_sym = current_scope->get_symbol(idx_var_name);
+                    var = ASRUtils::EXPR(ASR::make_Var_t(al, loc, idx_sym));
+                }
+                idx_vars.push_back(al, var);
+                loop_vars.push_back(al, var);
+                loop_var_indices.push_back(i);
+            }
+        }
+
         ASR::symbol_t* import_generic_procedure(std::string func_name, std::string module_name,
                                        Allocator& al, ASR::TranslationUnit_t& unit,
                                        LCompilers::PassOptions& pass_options,
@@ -315,7 +427,7 @@ namespace LCompilers {
                                                         s2c(al, sym), t,
                                                         s2c(al, module_name), nullptr, 0, s2c(al, remote_sym),
                                                         ASR::accessType::Private);
-            current_scope->add_symbol(sym, ASR::down_cast<ASR::symbol_t>(fn));
+            current_scope->add_or_overwrite_symbol(sym, ASR::down_cast<ASR::symbol_t>(fn));
             v = ASR::down_cast<ASR::symbol_t>(fn);
             current_scope = current_scope_copy;
             return v;
@@ -395,17 +507,18 @@ namespace LCompilers {
         ASR::expr_t* create_compare_helper(Allocator &al, const Location &loc, ASR::expr_t* left, ASR::expr_t* right,
                                                 ASR::cmpopType op) {
             ASR::ttype_t* type = ASRUtils::expr_type(left);
+            ASR::ttype_t* cmp_type = ASRUtils::TYPE(ASR::make_Logical_t(al, loc, 4, nullptr, 0));
             // TODO: compute `value`:
             if (ASRUtils::is_integer(*type)) {
-                return ASRUtils::EXPR(ASR::make_IntegerCompare_t(al, loc, left, op, right, type, nullptr));
+                return ASRUtils::EXPR(ASR::make_IntegerCompare_t(al, loc, left, op, right, cmp_type, nullptr));
             } else if (ASRUtils::is_real(*type)) {
-                return ASRUtils::EXPR(ASR::make_RealCompare_t(al, loc, left, op, right, type, nullptr));
+                return ASRUtils::EXPR(ASR::make_RealCompare_t(al, loc, left, op, right, cmp_type, nullptr));
             } else if (ASRUtils::is_complex(*type)) {
-                return ASRUtils::EXPR(ASR::make_ComplexCompare_t(al, loc, left, op, right, type, nullptr));
+                return ASRUtils::EXPR(ASR::make_ComplexCompare_t(al, loc, left, op, right, cmp_type, nullptr));
             } else if (ASRUtils::is_logical(*type)) {
-                return ASRUtils::EXPR(ASR::make_LogicalCompare_t(al, loc, left, op, right, type, nullptr));
+                return ASRUtils::EXPR(ASR::make_LogicalCompare_t(al, loc, left, op, right, cmp_type, nullptr));
             } else if (ASRUtils::is_character(*type)) {
-                return ASRUtils::EXPR(ASR::make_StringCompare_t(al, loc, left, op, right, type, nullptr));
+                return ASRUtils::EXPR(ASR::make_StringCompare_t(al, loc, left, op, right, cmp_type, nullptr));
             } else {
                 throw LCompilersException("Type not supported");
             }
@@ -580,7 +693,7 @@ namespace LCompilers {
                                         target, value, nullptr));
             loop_body.push_back(al, copy_stmt);
             ASR::stmt_t* fallback_loop = ASRUtils::STMT(ASR::make_DoLoop_t(al, do_loop_head.loc,
-                                            do_loop_head, loop_body.p, loop_body.size()));
+                                            nullptr, do_loop_head, loop_body.p, loop_body.size()));
             Vec<ASR::stmt_t*> fallback_while_loop = replace_doloop(al, *ASR::down_cast<ASR::DoLoop_t>(fallback_loop),
                                                                   (int) ASR::cmpopType::Lt);
             for( size_t i = 0; i < fallback_while_loop.size(); i++ ) {
@@ -771,8 +884,8 @@ namespace LCompilers {
             for (size_t i=0; i<loop.n_body; i++) {
                 body.push_back(al, loop.m_body[i]);
             }
-            ASR::stmt_t *stmt2 = ASRUtils::STMT(ASR::make_WhileLoop_t(al, loc, cond,
-                body.p, body.size()));
+            ASR::stmt_t *stmt2 = ASRUtils::STMT(ASR::make_WhileLoop_t(al, loc,
+                loop.m_name, cond, body.p, body.size()));
             Vec<ASR::stmt_t*> result;
             result.reserve(al, 2);
             if( stmt1 ) {
