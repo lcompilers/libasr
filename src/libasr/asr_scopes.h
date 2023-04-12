@@ -4,11 +4,13 @@
 #include <map>
 
 #include <libasr/alloc.h>
+#include <libasr/containers.h>
 
 namespace LCompilers  {
 
 namespace ASR {
     struct asr_t;
+    struct stmt_t;
     struct symbol_t;
 }
 
@@ -69,7 +71,21 @@ struct SymbolTable {
         scope.erase(name);
     }
 
+    // Add a new symbol that did not exist before
     void add_symbol(const std::string &name, ASR::symbol_t* symbol) {
+        LCOMPILERS_ASSERT(scope.find(name) == scope.end())
+        scope[name] = symbol;
+    }
+
+    // Overwrite an existing symbol
+    void overwrite_symbol(const std::string &name, ASR::symbol_t* symbol) {
+        LCOMPILERS_ASSERT(scope.find(name) != scope.end())
+        scope[name] = symbol;
+    }
+
+    // Use as the last resort, prefer to always either add a new symbol
+    // or overwrite an existing one, not both
+    void add_or_overwrite_symbol(const std::string &name, ASR::symbol_t* symbol) {
         scope[name] = symbol;
     }
 
@@ -80,6 +96,10 @@ struct SymbolTable {
         size_t n_scope_names, char **m_scope_names);
 
     std::string get_unique_name(const std::string &name);
+
+    void move_symbols_from_global_scope(Allocator &al,
+        SymbolTable *module_scope, Vec<char *> &syms,
+        Vec<char *> &mod_dependencies);
 };
 
 } // namespace LCompilers

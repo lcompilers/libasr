@@ -4,6 +4,8 @@
 #include <string>
 #include <iostream>
 #include <fstream>
+#include <iomanip>
+#include <sstream>
 
 #include <libasr/string_utils.h>
 #include <libasr/containers.h>
@@ -85,6 +87,29 @@ std::string replace(const std::string &s,
     return std::regex_replace(s, std::regex(regex), replace);
 }
 
+std::string get_escaped_str(const std::string &s) {
+    std::ostringstream o;
+    for (auto c = s.cbegin(); c != s.cend(); c++) {
+        switch (*c) {
+        case '"': o << "\\\""; break;
+        case '\\': o << "\\\\"; break;
+        case '\b': o << "\\b"; break;
+        case '\f': o << "\\f"; break;
+        case '\n': o << "\\n"; break;
+        case '\r': o << "\\r"; break;
+        case '\t': o << "\\t"; break;
+        default:
+            if ('\x00' <= *c && *c <= '\x1f') {
+                o << "\\u"
+                  << std::hex << std::setw(4) << std::setfill('0') << static_cast<int>(*c);
+            } else {
+                o << *c;
+            }
+        }
+    }
+    return o.str();
+}
+
 std::string read_file(const std::string &filename)
 {
     std::ifstream ifs(filename.c_str(), std::ios::in | std::ios::binary
@@ -129,5 +154,32 @@ std::string join_paths(const std::vector<std::string> &paths) {
     return p;
 }
 
+std::string unescape_string(Allocator &/*al*/, std::string s) {
+    std::string x;
+    for (size_t idx=0; idx < s.size(); idx++) {
+        if (s[idx] == '\\' && s[idx+1] == 'n') {
+            x += "\n";
+            idx++;
+        } else if (s[idx] == '\\' && s[idx+1] == 't') {
+            x += "\t";
+            idx++;
+        } else if (s[idx] == '\\' && s[idx+1] == 'b') {
+            x += "\b";
+            idx++;
+        } else if (s[idx] == '\\' && s[idx+1] == 'v') {
+            x += "\v";
+            idx++;
+        } else if (s[idx] == '\\' && s[idx+1] == '\\') {
+            x += "\\";
+            idx++;
+        } else if (s[idx] == '\\' && s[idx+1] == '"') {
+            x += '"';
+            idx++;
+        } else {
+            x += s[idx];
+        }
+    }
+    return x;
+}
 
 } // namespace LCompilers
