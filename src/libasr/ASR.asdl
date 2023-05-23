@@ -86,7 +86,7 @@ symbol
         bool loaded_from_mod, bool intrinsic)
     | Function(symbol_table symtab, identifier name, ttype function_signature,
         identifier* dependencies, expr* args, stmt* body, expr? return_var,
-        access access, bool deterministic, bool side_effect_free)
+        access access, bool deterministic, bool side_effect_free,  string? c_header)
     | GenericProcedure(symbol_table parent_symtab, identifier name,
         symbol* procs, access access)
     | CustomOperator(symbol_table parent_symtab, identifier name,
@@ -103,7 +103,8 @@ symbol
     | UnionType(symbol_table symtab, identifier name, identifier* dependencies,
         identifier* members, abi abi, access access, symbol? parent)
     | Variable(symbol_table parent_symtab, identifier name, identifier* dependencies,
-        intent intent, expr? symbolic_value, expr? value, storage_type storage, ttype type,
+        intent intent, expr? symbolic_value, expr? value, storage_type storage,
+        ttype type, symbol? type_declaration,
         abi abi, access access, presence presence, bool value_attr)
     | ClassType(symbol_table symtab, identifier name, abi abi, access access)
     | ClassProcedure(symbol_table parent_symtab, identifier name, identifier? self_argument,
@@ -207,7 +208,7 @@ stmt
     | ListAppend(expr a, expr ele)
     | AssociateBlockCall(symbol m)
     | SelectType(expr selector, type_stmt* body, stmt* default)
-    | CPtrToPointer(expr cptr, expr ptr, expr? shape)
+    | CPtrToPointer(expr cptr, expr ptr, expr? shape, expr? lower_bounds)
     | BlockCall(int label, symbol m)
     | SetInsert(expr a, expr ele)
     | SetRemove(expr a, expr ele)
@@ -215,6 +216,7 @@ stmt
     | ListRemove(expr a, expr ele)
     | ListClear(expr a)
     | DictInsert(expr a, expr key, expr value)
+    | Expr(expr expression)
 
 
 expr
@@ -225,7 +227,7 @@ expr
     | FunctionCall(symbol name, symbol? original_name, call_arg* args,
             ttype type, expr? value, expr? dt)
     | IntrinsicFunction(int intrinsic_id, expr* args, int overload_id,
-            ttype type, expr? value)
+            ttype? type, expr? value)
     | StructTypeConstructor(symbol dt_sym, call_arg* args, ttype type, expr? value)
     | EnumTypeConstructor(symbol dt_sym, expr* args, ttype type, expr? value)
     | UnionTypeConstructor(symbol dt_sym, expr* args, ttype type, expr? value)
@@ -237,6 +239,10 @@ expr
     | IntegerUnaryMinus(expr arg, ttype type, expr? value)
     | IntegerCompare(expr left, cmpop op, expr right, ttype type, expr? value)
     | IntegerBinOp(expr left, binop op, expr right, ttype type, expr? value)
+    | UnsignedIntegerConstant(int n, ttype type)
+    | UnsignedIntegerUnaryMinus(expr arg, ttype type, expr? value)
+    | UnsignedIntegerCompare(expr left, cmpop op, expr right, ttype type, expr? value)
+    | UnsignedIntegerBinOp(expr left, binop op, expr right, ttype type, expr? value)
     | RealConstant(float r, ttype type)
     | RealUnaryMinus(expr arg, ttype type, expr? value)
     | RealCompare(expr left, cmpop op, expr right, ttype type, expr? value)
@@ -254,6 +260,7 @@ expr
     | ListLen(expr arg, ttype type, expr? value)
     | ListConcat(expr left, expr right, ttype type, expr? value)
     | ListCompare(expr left, cmpop op, expr right, ttype type, expr? value)
+    | ListCount(expr arg, expr ele, ttype type, expr? value)
 
     | SetConstant(expr* elements, ttype type)
     | SetLen(expr arg, ttype type, expr? value)
@@ -272,10 +279,13 @@ expr
     | StringOrd(expr arg, ttype type, expr? value)
     | StringChr(expr arg, ttype type, expr? value)
 
+    | CPtrCompare(expr left, cmpop op, expr right, ttype type, expr? value)
+
     | DictConstant(expr* keys, expr* values, ttype type)
     | DictLen(expr arg, ttype type, expr? value)
 
     | Var(symbol v)
+    | FunctionParam(int param_number, ttype type, expr? value) --- used in types
 
     | ArrayConstant(expr* args, ttype type, arraystorage storage_format)
     | ArrayItem(expr v, array_index* args, ttype type, arraystorage storage_format, expr? value)
@@ -345,6 +355,7 @@ expr
 
 ttype
     = Integer(int kind, dimension* dims)
+    | UnsignedInteger(int kind, dimension* dims)
     | Real(int kind, dimension* dims)
     | Complex(int kind, dimension* dims)
     | Character(int kind, int len, expr? len_expr, dimension* dims)
@@ -401,6 +412,8 @@ cast_kind
     | RealToCharacter
     | IntegerToCharacter
     | LogicalToCharacter
+    | UnsignedIntegerToInteger
+    | IntegerToUnsignedInteger
 
 dimension = (expr? start, expr? length)
 

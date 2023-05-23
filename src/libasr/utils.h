@@ -17,6 +17,7 @@ enum Platform {
     OpenBSD,
 };
 
+std::string pf2s(Platform);
 Platform get_platform();
 
 struct CompilerOptions {
@@ -34,9 +35,10 @@ struct CompilerOptions {
     bool symtab_only = false;
     bool show_stacktrace = false;
     bool use_colors = true;
-    bool indent = false;
+    bool indent = true;
     bool json = false;
     bool tree = false;
+    bool visualize = false;
     bool fast = false;
     bool openmp = false;
     bool generate_object_code = false;
@@ -54,7 +56,7 @@ struct CompilerOptions {
     bool emit_debug_line_column = false;
     bool verbose = false;
     bool pass_cumulative = false;
-    std::string import_path = "";
+    std::vector<std::string> import_paths;
     Platform platform;
 
     CompilerOptions () : platform{get_platform()} {};
@@ -82,6 +84,7 @@ namespace LCompilers {
         bool fast = false; // is fast flag enabled.
         bool verbose = false; // For developer debugging
         bool pass_cumulative = false; // Apply passes cumulatively
+        bool disable_main = false;
     };
 
 }

@@ -1,6 +1,7 @@
-#include "libasr/asr.h"
-#include "libasr/asr_utils.h"
-#include "libasr/diagnostics.h"
+#include <libasr/asr.h>
+#include <libasr/asr_utils.h>
+#include <libasr/pass/intrinsic_function_registry.h>
+#include <libasr/diagnostics.h>
 #include <libasr/codegen/asr_to_julia.h>
 
 namespace LCompilers {
@@ -1440,8 +1441,16 @@ public:
     {
         src = "\"";
         std::string s = x.m_s;
-        for (size_t idx=0; idx < s.size(); idx++) {
-            src += s[idx];
+        for (size_t idx = 0; idx < s.size(); idx++) {
+            if (s[idx] == '\n') {
+                src += "\\n";
+            } else if (s[idx] == '\\') {
+                src += "\\\\";
+            } else if (s[idx] == '\"') {
+                src += "\\\"";
+            } else {
+                src += s[idx];
+            }
         }
         src += "\"";
         last_expr_precedence = julia_prec::Base;
@@ -1872,6 +1881,40 @@ public:
     {
         std::string indent(indentation_level * indentation_spaces, ' ');
         std::string out = indent + "// FIXME: File Read\n";
+        src = out;
+    }
+
+    #define SET_INTRINSIC_NAME(X, func_name)                             \
+        case (static_cast<int64_t>(ASRUtils::IntrinsicFunctions::X)) : { \
+            out += func_name; break;                                     \
+        }
+
+    void visit_IntrinsicFunction(const ASR::IntrinsicFunction_t &x) {
+        std::string out;
+        LCOMPILERS_ASSERT(x.n_args == 1);
+        visit_expr(*x.m_args[0]);
+        switch (x.m_intrinsic_id) {
+            SET_INTRINSIC_NAME(Sin, "sin");
+            SET_INTRINSIC_NAME(Cos, "cos");
+            SET_INTRINSIC_NAME(Tan, "tan");
+            SET_INTRINSIC_NAME(Asin, "asin");
+            SET_INTRINSIC_NAME(Acos, "acos");
+            SET_INTRINSIC_NAME(Atan, "atan");
+            SET_INTRINSIC_NAME(Sinh, "sinh");
+            SET_INTRINSIC_NAME(Cosh, "cosh");
+            SET_INTRINSIC_NAME(Tanh, "tanh");
+            SET_INTRINSIC_NAME(Abs, "abs");
+            SET_INTRINSIC_NAME(Exp, "exp");
+            SET_INTRINSIC_NAME(Exp2, "exp2");
+            SET_INTRINSIC_NAME(Expm1, "expm1");
+            SET_INTRINSIC_NAME(Sum, "sum");
+            default : {
+                throw LCompilersException("IntrinsicFunction: `"
+                    + ASRUtils::get_intrinsic_name(x.m_intrinsic_id)
+                    + "` is not implemented");
+            }
+        }
+        out += "(" + src + ")";
         src = out;
     }
 };

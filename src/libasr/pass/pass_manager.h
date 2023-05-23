@@ -23,6 +23,7 @@
 #include <libasr/pass/global_stmts.h>
 #include <libasr/pass/param_to_const.h>
 #include <libasr/pass/print_arr.h>
+#include <libasr/pass/where.h>
 #include <libasr/pass/print_list_tuple.h>
 #include <libasr/pass/arr_slice.h>
 #include <libasr/pass/flip_sign.h>
@@ -44,6 +45,7 @@
 #include <libasr/pass/pass_list_expr.h>
 #include <libasr/pass/subroutine_from_function.h>
 #include <libasr/pass/transform_optional_argument_functions.h>
+#include <libasr/pass/nested_vars.h>
 #include <libasr/asr_verify.h>
 
 #include <map>
@@ -88,14 +90,18 @@ namespace LCompilers {
             {"pass_array_by_data", &pass_array_by_data},
             {"subroutine_from_function", &pass_create_subroutine_from_function},
             {"transform_optional_argument_functions", &pass_transform_optional_argument_functions},
-            {"init_expr", &pass_replace_init_expr}
+            {"init_expr", &pass_replace_init_expr},
+            {"nested_vars", &pass_nested_vars},
+            {"where", &pass_replace_where}
         };
 
         bool is_fast;
         bool apply_default_passes;
         bool c_skip_pass; // This will contain the passes that are to be skipped in C
 
-        void _apply_passes(Allocator& al, ASR::TranslationUnit_t* asr,
+        public:
+
+        void apply_passes(Allocator& al, ASR::TranslationUnit_t* asr,
                            std::vector<std::string>& passes, PassOptions &pass_options,
                            diag::Diagnostics &diagnostics) {
             if (pass_options.pass_cumulative) {
@@ -143,7 +149,8 @@ namespace LCompilers {
             #if defined(WITH_LFORTRAN_ASSERT)
                 if (!asr_verify(*asr, true, diagnostics)) {
                     std::cerr << diagnostics.render2();
-                    throw LCompilersException("Verify failed");
+                    throw LCompilersException("Verify failed in the pass: "
+                        + passes[i]);
                 };
             #endif
                 if (pass_options.verbose) {
@@ -151,8 +158,6 @@ namespace LCompilers {
                 }
             }
         }
-
-        public:
 
         bool rtlib=false;
 
@@ -184,15 +189,18 @@ namespace LCompilers {
         PassManager(): is_fast{false}, apply_default_passes{false},
             c_skip_pass{false} {
             _passes = {
+                "nested_vars",
                 "global_stmts",
                 "init_expr",
-                "class_constructor",
                 "implied_do_loops",
+                "class_constructor",
                 "pass_list_expr",
-                "arr_slice",
+                // "arr_slice", TODO: Remove ``arr_slice.cpp`` completely
                 "subroutine_from_function",
+                "where",
                 "array_op",
                 "intrinsic_function",
+                "array_op",
                 "pass_array_by_data",
                 "print_arr",
                 "print_list_tuple",
@@ -208,18 +216,20 @@ namespace LCompilers {
             _with_optimization_passes = {
                 "global_stmts",
                 "init_expr",
-                "class_constructor",
                 "implied_do_loops",
+                "class_constructor",
                 "pass_array_by_data",
                 "arr_slice",
                 "subroutine_from_function",
                 "array_op",
                 "intrinsic_function",
+                "array_op",
                 "print_arr",
                 "print_list_tuple",
                 "loop_vectorise",
                 "loop_unroll",
                 "array_dim_intrinsics_update",
+                "where",
                 "do_loops",
                 "forall",
                 "dead_code_removal",
@@ -256,15 +266,15 @@ namespace LCompilers {
                           diag::Diagnostics &diagnostics) {
             if( !_user_defined_passes.empty() ) {
                 pass_options.fast = true;
-                _apply_passes(al, asr, _user_defined_passes, pass_options,
+                apply_passes(al, asr, _user_defined_passes, pass_options,
                     diagnostics);
             } else if( apply_default_passes ) {
                 pass_options.fast = is_fast;
                 if( is_fast ) {
-                    _apply_passes(al, asr, _with_optimization_passes, pass_options,
+                    apply_passes(al, asr, _with_optimization_passes, pass_options,
                         diagnostics);
                 } else {
-                    _apply_passes(al, asr, _passes, pass_options, diagnostics);
+                    apply_passes(al, asr, _passes, pass_options, diagnostics);
                 }
             }
         }
