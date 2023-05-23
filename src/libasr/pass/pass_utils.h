@@ -35,11 +35,15 @@ namespace LCompilers {
 
         void fix_dimension(ASR::Cast_t* x, ASR::expr_t* arg_expr);
 
-        ASR::expr_t* create_var(int counter, std::string suffix, const Location& loc,
-                                ASR::ttype_t* var_type, Allocator& al, SymbolTable*& current_scope);
+        ASR::ttype_t* get_matching_type(ASR::expr_t* sibling, Allocator& al);
 
         ASR::expr_t* create_var(int counter, std::string suffix, const Location& loc,
-                                ASR::expr_t* sibling, Allocator& al, SymbolTable*& current_scope);
+                                ASR::ttype_t* var_type, Allocator& al, SymbolTable*& current_scope,
+                                ASR::storage_typeType storage_=ASR::storage_typeType::Default);
+
+        ASR::expr_t* create_var(int counter, std::string suffix, const Location& loc,
+                                ASR::expr_t* sibling, Allocator& al, SymbolTable*& current_scope,
+                                ASR::storage_typeType storage_=ASR::storage_typeType::Default);
 
         void create_vars(Vec<ASR::expr_t*>& vars, int n_vars, const Location& loc,
                          Allocator& al, SymbolTable*& current_scope, std::string suffix="_k",
@@ -193,7 +197,15 @@ namespace LCompilers {
                     ASR::Function_t &xx = const_cast<ASR::Function_t&>(x);
                     SymbolTable* current_scope_copy = this->current_scope;
                     this->current_scope = xx.m_symtab;
+                    self().visit_ttype(*x.m_function_signature);
+                    for (size_t i=0; i<x.n_args; i++) {
+                        self().visit_expr(*x.m_args[i]);
+                    }
                     transform_stmts(xx.m_body, xx.n_body);
+
+                    if (x.m_return_var) {
+                        self().visit_expr(*x.m_return_var);
+                    }
 
                     for (auto &item : x.m_symtab->get_scope()) {
                         if (ASR::is_a<ASR::Function_t>(*item.second)) {
@@ -235,9 +247,9 @@ namespace LCompilers {
 
             private:
 
-                Vec<char*> function_dependencies;
-                Vec<char*> module_dependencies;
-                Vec<char*> variable_dependencies;
+                SetChar function_dependencies;
+                SetChar module_dependencies;
+                SetChar variable_dependencies;
                 Allocator& al;
                 bool fill_function_dependencies;
                 bool fill_module_dependencies;
@@ -257,7 +269,7 @@ namespace LCompilers {
 
                 void visit_Function(const ASR::Function_t& x) {
                     ASR::Function_t& xx = const_cast<ASR::Function_t&>(x);
-                    Vec<char*> function_dependencies_copy;
+                    SetChar function_dependencies_copy;
                     function_dependencies_copy.from_pointer_n_copy(al, function_dependencies.p, function_dependencies.size());
                     function_dependencies.n = 0;
                     function_dependencies.reserve(al, 1);
@@ -281,9 +293,7 @@ namespace LCompilers {
                     fill_module_dependencies = true;
                     BaseWalkVisitor<UpdateDependenciesVisitor>::visit_Module(x);
                     for( size_t i = 0; i < xx.n_dependencies; i++ ) {
-                        if( !present(module_dependencies, xx.m_dependencies[i]) ) {
-                            module_dependencies.push_back(al, xx.m_dependencies[i]);
-                        }
+                        module_dependencies.push_back(al, xx.m_dependencies[i]);
                     }
                     xx.n_dependencies = module_dependencies.size();
                     xx.m_dependencies = module_dependencies.p;
@@ -304,9 +314,7 @@ namespace LCompilers {
 
                 void visit_Var(const ASR::Var_t& x) {
                     if( fill_variable_dependencies ) {
-                        if( !present(variable_dependencies, ASRUtils::symbol_name(x.m_v)) ) {
-                            variable_dependencies.push_back(al, ASRUtils::symbol_name(x.m_v));
-                        }
+                        variable_dependencies.push_back(al, ASRUtils::symbol_name(x.m_v));
                     }
                 }
 
@@ -498,6 +506,7 @@ namespace LCompilers {
         template <typename T>
         void replace_ArrayConstant(ASR::ArrayConstant_t* x, T* replacer,
             bool& remove_original_statement, Vec<ASR::stmt_t*>* result_vec) {
+            Allocator& al = replacer->al;
             if( !replacer->result_var ) {
                 return ;
             }
@@ -536,6 +545,21 @@ namespace LCompilers {
                         args.reserve(replacer->al, 1);
                         args.push_back(replacer->al, ai);
                         ASR::ttype_t* array_ref_type = ASRUtils::expr_type(ASRUtils::EXPR((ASR::asr_t*)arr_var));
+                        if( ASR::is_a<ASR::Struct_t>(*ASRUtils::type_get_past_pointer(array_ref_type)) ) {
+                            ASR::Struct_t* struct_t = ASR::down_cast<ASR::Struct_t>(
+                                ASRUtils::type_get_past_pointer(array_ref_type));
+                            if( replacer->current_scope->get_counter() != ASRUtils::symbol_parent_symtab(
+                                    struct_t->m_derived_type)->get_counter() ) {
+                                ASR::symbol_t* m_derived_type = replacer->current_scope->resolve_symbol(
+                                    ASRUtils::symbol_name(struct_t->m_derived_type));
+                                ASR::ttype_t* struct_type = ASRUtils::TYPE(ASR::make_Struct_t(al,
+                                    struct_t->base.base.loc, m_derived_type, struct_t->m_dims, struct_t->n_dims));
+                                if( ASR::is_a<ASR::Pointer_t>(*array_ref_type) ) {
+                                    struct_type = ASRUtils::TYPE(ASR::make_Pointer_t(al, array_ref_type->base.loc, struct_type));
+                                }
+                                array_ref_type = struct_type;
+                            }
+                        }
                         Vec<ASR::dimension_t> empty_dims;
                         empty_dims.reserve(replacer->al, 1);
                         array_ref_type = ASRUtils::duplicate_type(replacer->al, array_ref_type, &empty_dims);
@@ -623,6 +647,61 @@ namespace LCompilers {
             remove_original_statement = true;
         }
     }
+
+    static inline void handle_fn_return_var(Allocator &al, ASR::Function_t *x,
+            bool (*is_array_or_struct)(ASR::expr_t*)) {
+        if (x->m_return_var) {
+            /*
+            * The `return_var` of the function, which is either an array or
+            * struct, is set to `null`, and the destination variable will be
+            * passed as the last argument to the existing function. This helps
+            * in avoiding deep copies and the destination memory directly gets
+            * filled inside the function.
+            */
+            if( is_array_or_struct(x->m_return_var)) {
+                for( auto& s_item: x->m_symtab->get_scope() ) {
+                    ASR::symbol_t* curr_sym = s_item.second;
+                    if( curr_sym->type == ASR::symbolType::Variable ) {
+                        ASR::Variable_t* var = ASR::down_cast<ASR::Variable_t>(curr_sym);
+                        if( var->m_intent == ASR::intentType::Unspecified ) {
+                            var->m_intent = ASR::intentType::In;
+                        } else if( var->m_intent == ASR::intentType::ReturnVar ) {
+                            var->m_intent = ASR::intentType::Out;
+                        }
+                    }
+                }
+                Vec<ASR::expr_t*> a_args;
+                a_args.reserve(al, x->n_args + 1);
+                for( size_t i = 0; i < x->n_args; i++ ) {
+                    a_args.push_back(al, x->m_args[i]);
+                }
+                LCOMPILERS_ASSERT(x->m_return_var)
+                a_args.push_back(al, x->m_return_var);
+                x->m_args = a_args.p;
+                x->n_args = a_args.n;
+                x->m_return_var = nullptr;
+                ASR::FunctionType_t* s_func_type = ASR::down_cast<ASR::FunctionType_t>(
+                    x->m_function_signature);
+                Vec<ASR::ttype_t*> arg_types;
+                arg_types.reserve(al, a_args.n);
+                for(auto &e: a_args) {
+                    ASRUtils::ReplaceWithFunctionParamVisitor replacer(al, x->m_args, x->n_args);
+                    arg_types.push_back(al, replacer.replace_args_with_FunctionParam(
+                                                ASRUtils::expr_type(e)));
+                }
+                s_func_type->m_arg_types = arg_types.p;
+                s_func_type->n_arg_types = arg_types.n;
+                s_func_type->m_return_var_type = nullptr;
+            }
+        }
+        for (auto &item : x->m_symtab->get_scope()) {
+            if (ASR::is_a<ASR::Function_t>(*item.second)) {
+                handle_fn_return_var(al, ASR::down_cast<ASR::Function_t>(
+                    item.second), is_array_or_struct);
+            }
+        }
+    }
+
 
     } // namespace PassUtils
 
