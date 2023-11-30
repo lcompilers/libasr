@@ -3,7 +3,7 @@
 #include <libasr/exception.h>
 #include <libasr/asr_utils.h>
 #include <libasr/asr_verify.h>
-#include <libasr/pass/sign_from_value.h>
+#include <libasr/pass/replace_sign_from_value.h>
 #include <libasr/pass/pass_utils.h>
 
 #include <vector>
@@ -133,8 +133,7 @@ public:
         }
 
         sign_from_value_var = PassUtils::get_sign_from_value(first_arg, second_arg,
-                                     al, unit, pass_options, current_scope, x.base.base.loc,
-                                     [&](const std::string &msg, const Location &) { throw LCompilersException(msg); });
+                                     al, unit, x.base.base.loc, pass_options);
         from_sign_from_value = false;
     }
 

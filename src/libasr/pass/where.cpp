@@ -4,7 +4,7 @@
 #include <libasr/asr_utils.h>
 #include <libasr/asr_verify.h>
 #include <libasr/pass/pass_utils.h>
-#include <libasr/pass/where.h>
+#include <libasr/pass/replace_where.h>
 
 
 namespace LCompilers {
@@ -57,15 +57,22 @@ public:
         ASR::expr_t* expr_ = ASRUtils::EXPR(ASR::make_Var_t(al, x->base.base.loc, x->m_v));
         *current_expr = expr_;
         if (ASRUtils::is_array(ASRUtils::expr_type(expr_))) {
-            ASR::expr_t* new_expr_ = PassUtils::create_array_ref(expr_, idx_vars, al);
+            ASR::expr_t* new_expr_ = PassUtils::create_array_ref(expr_, idx_vars, al, current_scope);
             *current_expr = new_expr_;
+        }
+    }
+
+    void replace_ArrayPhysicalCast(ASR::ArrayPhysicalCast_t* x) {
+        ASR::BaseExprReplacer<ReplaceVar>::replace_ArrayPhysicalCast(x);
+        if( !ASRUtils::is_array(ASRUtils::expr_type(x->m_arg)) ) {
+            *current_expr = x->m_arg;
         }
     }
 
     void replace_FunctionCall(ASR::FunctionCall_t* x) {
         uint64_t h = get_hash((ASR::asr_t*) x->m_name);
         if (return_var_hash.find(h) != return_var_hash.end()) {
-            *current_expr = PassUtils::create_array_ref(return_var_hash[h], idx_vars, al);
+            *current_expr = PassUtils::create_array_ref(return_var_hash[h], idx_vars, al, current_scope);
         }
     }
 
@@ -89,7 +96,7 @@ public:
         BinOpReplacement(make_RealBinOp_t)
     }
 
-    void replace_IntrinsicFunction(ASR::IntrinsicFunction_t* x) {
+    void replace_IntrinsicScalarFunction(ASR::IntrinsicScalarFunction_t* x) {
         Vec<ASR::expr_t*> args;
         args.reserve(al, x->n_args);
         for (size_t i=0; i<x->n_args; i++) {
@@ -99,10 +106,15 @@ public:
             args.push_back(al, *current_expr);
         }
         ASR::ttype_t* type = ASRUtils::expr_type(args[0]);
-        ASR::expr_t* new_expr = ASRUtils::EXPR(ASR::make_IntrinsicFunction_t(al, x->base.base.loc, x->m_intrinsic_id, args.p, x->n_args, x->m_overload_id, type, x->m_value));
+        ASR::expr_t* new_expr = ASRUtils::EXPR(
+            ASRUtils::make_IntrinsicScalarFunction_t_util(al, x->base.base.loc,
+            x->m_intrinsic_id, args.p, x->n_args, x->m_overload_id, type, x->m_value));
         *current_expr = new_expr;
     }
 
+    void replace_Array(ASR::Array_t */*x*/) {
+        // pass
+    }
 };
 
 class VarVisitor : public ASR::CallReplacerOnExpressionsVisitor<VarVisitor>
@@ -163,6 +175,11 @@ public:
         ASR::expr_t* value = *replacer.current_expr;
         current_expr = current_expr_copy;
         this->visit_expr(*x.m_value);
+        if( !ASRUtils::is_array(ASRUtils::expr_type(target)) ) {
+            if( ASR::is_a<ASR::ArrayBroadcast_t>(*value) ) {
+                value = ASR::down_cast<ASR::ArrayBroadcast_t>(value)->m_array;
+            }
+        }
         ASR::stmt_t* tmp_stmt = ASRUtils::STMT(ASR::make_Assignment_t(al, x.base.base.loc, target, value, nullptr));
         pass_result.push_back(al, tmp_stmt);
     }
@@ -184,26 +201,26 @@ public:
         ASR::RealCompare_t* real_cmp = nullptr;
         ASR::expr_t* left, *right;
         bool is_right_array = false;
-        ASR::ttype_t* logical_type = ASRUtils::TYPE(ASR::make_Logical_t(al, loc, 4,nullptr, 0));
+        ASR::ttype_t* logical_type = ASRUtils::TYPE(ASR::make_Logical_t(al, loc, 4));
 
         if (ASR::is_a<ASR::IntegerCompare_t>(*test)) {
             int_cmp = ASR::down_cast<ASR::IntegerCompare_t>(test);
             left = int_cmp->m_left;
             right = int_cmp->m_right;
-        }
-
-        if (ASR::is_a<ASR::RealCompare_t>(*test)) {
+        } else if (ASR::is_a<ASR::RealCompare_t>(*test)) {
             real_cmp = ASR::down_cast<ASR::RealCompare_t>(test);
             left = real_cmp->m_left;
             right = real_cmp->m_right;
+        } else {
+            throw LCompilersException("Unsupported type");
         }
 
         if (ASRUtils::is_array(ASRUtils::expr_type(right))) {
             is_right_array = true;
         }
 
-        ASR::expr_t* left_array = PassUtils::create_array_ref(left, idx_vars, al);
-        ASR::expr_t* right_array = PassUtils::create_array_ref(right, idx_vars, al);
+        ASR::expr_t* left_array = PassUtils::create_array_ref(left, idx_vars, al, current_scope);
+        ASR::expr_t* right_array = PassUtils::create_array_ref(right, idx_vars, al, current_scope);
 
         ASR::expr_t* test_new = ASRUtils::EXPR(
                     real_cmp?ASR::make_RealCompare_t(al, loc, left_array, real_cmp->m_op, is_right_array?right_array:right,
@@ -258,11 +275,11 @@ public:
         if (ASR::is_a<ASR::IntegerCompare_t>(*test)) {
             int_cmp = ASR::down_cast<ASR::IntegerCompare_t>(test);
             left = int_cmp->m_left;
-        }
-
-        if (ASR::is_a<ASR::RealCompare_t>(*test)) {
+        } else if (ASR::is_a<ASR::RealCompare_t>(*test)) {
             real_cmp = ASR::down_cast<ASR::RealCompare_t>(test);
             left = real_cmp->m_left;
+        } else {
+            throw LCompilersException("Unsupported type");
         }
 
         // Construct a do loop
@@ -273,7 +290,7 @@ public:
         PassUtils::create_idx_vars(idx_vars, 1, loc, al, current_scope);
         ASR::expr_t* var = idx_vars[0];
 
-        ASR::ttype_t* int32_type = ASRUtils::TYPE(ASR::make_Integer_t(al, loc, 4, nullptr, 0));
+        ASR::ttype_t* int32_type = ASRUtils::TYPE(ASR::make_Integer_t(al, loc, 4));
 
         if (ASR::is_a<ASR::FunctionCall_t>(*left)) {
             // Create an assignment `return_var = left` and replace function call with return_var
@@ -282,8 +299,9 @@ public:
             ASR::Function_t* fn = ASR::down_cast<ASR::Function_t>(fc->m_name);
             ASR::expr_t* return_var_expr = fn->m_return_var;
             ASR::Variable_t* return_var = ASRUtils::EXPR2VAR(return_var_expr);
-            ASR::expr_t* new_return_var_expr = PassUtils::create_var(1, return_var->m_name, return_var->base.base.loc, return_var->m_type,
-                                                al, current_scope, return_var->m_storage);
+            ASR::expr_t* new_return_var_expr = PassUtils::create_var(1,
+                return_var->m_name, return_var->base.base.loc,
+                return_var->m_type, al, current_scope);
             assign_stmt = ASRUtils::STMT(ASR::make_Assignment_t(al, loc, new_return_var_expr, left, nullptr));
             opt_left = new_return_var_expr;
             return_var_hash[h] = opt_left;

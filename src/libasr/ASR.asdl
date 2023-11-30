@@ -29,7 +29,7 @@
 module ASR {
 
 unit
-    = TranslationUnit(symbol_table global_scope, node* items)
+    = TranslationUnit(symbol_table symtab, node* items)
 
 -- # Documentation for the symbol type
 
@@ -86,7 +86,7 @@ symbol
         bool loaded_from_mod, bool intrinsic)
     | Function(symbol_table symtab, identifier name, ttype function_signature,
         identifier* dependencies, expr* args, stmt* body, expr? return_var,
-        access access, bool deterministic, bool side_effect_free,  string? c_header)
+        access access, bool deterministic, bool side_effect_free, string? module_file)
     | GenericProcedure(symbol_table parent_symtab, identifier name,
         symbol* procs, access access)
     | CustomOperator(symbol_table parent_symtab, identifier name,
@@ -96,12 +96,12 @@ symbol
         identifier original_name, access access)
     | StructType(symbol_table symtab, identifier name, identifier* dependencies,
         identifier* members, abi abi, access access, bool is_packed, bool is_abstract,
-        expr? alignment, symbol? parent)
+        call_arg* initializers, expr? alignment, symbol? parent)
     | EnumType(symbol_table symtab, identifier name, identifier* dependencies,
         identifier* members, abi abi, access access, enumtype enum_value_type,
         ttype type, symbol? parent)
     | UnionType(symbol_table symtab, identifier name, identifier* dependencies,
-        identifier* members, abi abi, access access, symbol? parent)
+        identifier* members, abi abi, access access, call_arg* initializers, symbol? parent)
     | Variable(symbol_table parent_symtab, identifier name, identifier* dependencies,
         intent intent, expr? symbolic_value, expr? value, storage_type storage,
         ttype type, symbol? type_declaration,
@@ -111,8 +111,12 @@ symbol
         identifier proc_name, symbol proc, abi abi, bool is_deferred)
     | AssociateBlock(symbol_table symtab, identifier name, stmt* body)
     | Block(symbol_table symtab, identifier name, stmt* body)
+    | Requirement(symbol_table symtab, identifier name, identifier* args,
+        require_instantiation* requires)
+    | Template(symbol_table symtab, identifier name, identifier* args,
+        require_instantiation* requires)
 
-storage_type = Default | Save | Parameter | Allocatable
+storage_type = Default | Save | Parameter
 access = Public | Private
 intent = Local | In | Out | InOut | ReturnVar | Unspecified
 deftype = Implementation | Interface
@@ -137,6 +141,16 @@ presence = Required | Optional
 -- An interface that uses `iso_c_binding` and `bind(c)` is represented using
 -- abi=BindC.
 
+-- abi=BindPython: the symbol's implementation is
+-- stored in text format in the user source code file.
+-- The symbol is executed using the CPython interpreter.
+-- LPython manages the conversion of arguments to be passed to such symbols
+-- and also converts the return values from such symbols.
+
+-- abi=BindJS: the symbol's implementation is
+-- available with Javascript.
+-- This abi type is to be mainly used with the WASM Backend.
+
 -- abi=Interactive: the symbol's implementation has been provided by the
 -- previous REPL execution (e.g., if LLVM backend is used for the interactive
 -- mode, the previous execution generated machine code for this symbol's
@@ -153,12 +167,15 @@ abi                   -- External     ABI
     | LFortranModule  --   Yes        LFortran
     | GFortranModule  --   Yes        GFortran
     | BindC           --   Yes        C
+    | BindPython      --   Yes        Python
+    | BindJS          --   Yes        Javascript
     | Interactive     --   Yes        Unspecified
     | Intrinsic       --   Yes        Unspecified
 
 
 stmt
     = Allocate(alloc_arg* args, expr? stat, expr? errmsg, expr? source)
+    | ReAlloc(alloc_arg* args)
     | Assign(int label, identifier variable)
     | Assignment(expr target, expr value, stmt? overloaded)
     | Associate(expr target, expr value)
@@ -181,8 +198,8 @@ stmt
     | GoToTarget(int id, identifier name)
     | If(expr test, stmt* body, stmt* orelse)
     | IfArithmetic(expr test, int lt_label, int eq_label, int gt_label)
-    | Print(expr? fmt, expr* values, expr? separator, expr? end)
-    | FileOpen(int label, expr? newunit, expr? filename, expr? status)
+    | Print(expr* values, expr? separator, expr? end)
+    | FileOpen(int label, expr? newunit, expr? filename, expr? status, expr? form)
     | FileClose(int label, expr? unit, expr? iostat, expr? iomsg, expr? err, expr? status)
     | FileRead(int label, expr? unit, expr? fmt, expr? iomsg, expr? iostat, expr? id, expr* values)
     | FileBackspace(int label, expr? unit, expr? iostat, expr? err)
@@ -195,7 +212,7 @@ stmt
               expr? read, expr? write, expr? readwrite, expr? delim,
               expr? pad, expr? flen, expr? blocksize, expr? convert,
               expr? carriagecontrol, expr? iolength)
-    | FileWrite(int label, expr? unit, expr? fmt, expr? iomsg, expr? iostat, expr? id, expr* values, expr? separator, expr? end)
+    | FileWrite(int label, expr? unit, expr? iomsg, expr? iostat, expr? id, expr* values, expr? separator, expr? end)
     | Return()
     | Select(expr test, case_stmt* body, stmt* default)
     | Stop(expr? code)
@@ -226,7 +243,11 @@ expr
     | NamedExpr(expr target, expr value, ttype type)
     | FunctionCall(symbol name, symbol? original_name, call_arg* args,
             ttype type, expr? value, expr? dt)
-    | IntrinsicFunction(int intrinsic_id, expr* args, int overload_id,
+    | IntrinsicScalarFunction(int intrinsic_id, expr* args, int overload_id,
+            ttype? type, expr? value)
+    | IntrinsicArrayFunction(int arr_intrinsic_id, expr* args, int overload_id,
+            ttype? type, expr? value)
+    | IntrinsicImpureFunction(int impure_intrinsic_id, expr* args, int overload_id,
             ttype? type, expr? value)
     | StructTypeConstructor(symbol dt_sym, call_arg* args, ttype type, expr? value)
     | EnumTypeConstructor(symbol dt_sym, expr* args, ttype type, expr? value)
@@ -241,12 +262,14 @@ expr
     | IntegerBinOp(expr left, binop op, expr right, ttype type, expr? value)
     | UnsignedIntegerConstant(int n, ttype type)
     | UnsignedIntegerUnaryMinus(expr arg, ttype type, expr? value)
+    | UnsignedIntegerBitNot(expr arg, ttype type, expr? value)
     | UnsignedIntegerCompare(expr left, cmpop op, expr right, ttype type, expr? value)
     | UnsignedIntegerBinOp(expr left, binop op, expr right, ttype type, expr? value)
     | RealConstant(float r, ttype type)
     | RealUnaryMinus(expr arg, ttype type, expr? value)
     | RealCompare(expr left, cmpop op, expr right, ttype type, expr? value)
     | RealBinOp(expr left, binop op, expr right, ttype type, expr? value)
+    | RealCopySign(expr target, expr source, ttype type, expr? value)
     | ComplexConstant(float re, float im, ttype type)
     | ComplexUnaryMinus(expr arg, ttype type, expr? value)
     | ComplexCompare(expr left, cmpop op, expr right, ttype type, expr? value)
@@ -268,6 +291,7 @@ expr
     | TupleConstant(expr* elements, ttype type)
     | TupleLen(expr arg, ttype type, expr value)
     | TupleCompare(expr left, cmpop op, expr right, ttype type, expr? value)
+    | TupleConcat(expr left, expr right, ttype type, expr? value)
 
     | StringConstant(string s, ttype type)
     | StringConcat(expr left, expr right, ttype type, expr? value)
@@ -278,8 +302,10 @@ expr
     | StringCompare(expr left, cmpop op, expr right, ttype type, expr? value)
     | StringOrd(expr arg, ttype type, expr? value)
     | StringChr(expr arg, ttype type, expr? value)
+    | StringFormat(expr fmt, expr* args, string_format_kind kind, ttype type, expr? value)
 
     | CPtrCompare(expr left, cmpop op, expr right, ttype type, expr? value)
+    | SymbolicCompare(expr left, cmpop op, expr right, ttype type, expr? value)
 
     | DictConstant(expr* keys, expr* values, ttype type)
     | DictLen(expr arg, ttype type, expr? value)
@@ -294,11 +320,10 @@ expr
     | ArrayBound(expr v, expr? dim, ttype type, arraybound bound,
                  expr? value)
     | ArrayTranspose(expr matrix, ttype type, expr? value)
-    | ArrayMatMul(expr matrix_a, expr matrix_b, ttype type, expr? value)
     | ArrayPack(expr array, expr mask, expr? vector, ttype type, expr? value)
     | ArrayReshape(expr array, expr shape, ttype type, expr? value)
-    | ArrayMaxloc(expr array, expr? dim, expr? mask, expr? kind, expr? back, ttype type, expr? value)
     | ArrayAll(expr mask, expr? dim, ttype type, expr? value)
+    | ArrayBroadcast(expr array, expr shape, ttype type, expr? value)
 
     | BitCast(expr source, expr mold, expr? size, ttype type, expr? value)
     | StructInstanceMember(expr v, symbol m, ttype type, expr? value)
@@ -309,7 +334,23 @@ expr
     | EnumValue(expr v, ttype enum_type, ttype type, expr? value)
     | OverloadedCompare(expr left, cmpop op, expr right, ttype type, expr? value, expr overloaded)
     | OverloadedBinOp(expr left, binop op, expr right, ttype type, expr? value, expr overloaded)
+    | OverloadedUnaryMinus(expr arg, ttype type, expr? value, expr overloaded)
+    -- This Cast changes the value (the bits) of the `arg`:
     | Cast(expr arg, cast_kind kind, ttype type, expr? value)
+    -- This ArrayPhysicalCast we only change the physical type, the logical type does not change
+    -- Note: the "new" physical type here will also be part of the "type" member
+    -- This allow to represent any combination, but we'll only support a few, at least we need:
+    -- Maybe it's easier to add an enumeration here:
+    -- Descriptor -> Pointer
+    -- Pointer -> Descriptor
+
+    -- CompileTimeFixedSizeArray -> Pointer
+    -- CompileTimeFixedSizeArray -> Descriptor
+    -- Descriptor -> NumPy
+    -- NumPy -> Descriptor
+    -- ISODescriptor -> Descriptor
+    -- Descriptor -> ISODescriptor
+    | ArrayPhysicalCast(expr arg, array_physical_type old, array_physical_type new, ttype type, expr? value)
     | ComplexRe(expr arg, ttype type, expr? value)
     | ComplexIm(expr arg, ttype type, expr? value)
     | DictItem(expr a, expr key, expr? default, ttype type, expr? value)
@@ -319,7 +360,7 @@ expr
     | ListItem(expr a, expr pos, ttype type, expr? value)
     | TupleItem(expr a, expr pos, ttype type, expr? value)
     | ListSection(expr a, array_index section, ttype type, expr? value)
-    | ListPop(expr a, expr? index, ttype type, expr? value)
+    | ListRepeat(expr left, expr right, ttype type, expr? value)
     | DictPop(expr a, expr key, ttype type, expr? value)
     | SetPop(expr a, ttype type, expr? value)
     | IntegerBitLen(expr a, ttype type, expr? value)
@@ -354,30 +395,41 @@ expr
 --     integer, so we also use kind=4 for the default logical.)
 
 ttype
-    = Integer(int kind, dimension* dims)
-    | UnsignedInteger(int kind, dimension* dims)
-    | Real(int kind, dimension* dims)
-    | Complex(int kind, dimension* dims)
-    | Character(int kind, int len, expr? len_expr, dimension* dims)
-    | Logical(int kind, dimension* dims)
+    = Integer(int kind)
+    | UnsignedInteger(int kind)
+    | Real(int kind)
+    | Complex(int kind)
+    | Character(int kind, int len, expr? len_expr)
+    | Logical(int kind)
     | Set(ttype type)
     | List(ttype type)
     | Tuple(ttype* type)
-    | Struct(symbol derived_type, dimension* dims)
-    | Enum(symbol enum_type, dimension *dims)
-    | Union(symbol union_type, dimension *dims)
-    | Class(symbol class_type, dimension* dims)
+    | Struct(symbol derived_type)
+    | Enum(symbol enum_type)
+    | Union(symbol union_type)
+    | Class(symbol class_type)
     | Dict(ttype key_type, ttype value_type)
     | Pointer(ttype type)
+    | Allocatable(ttype type)
     | Const(ttype type)
     | CPtr()
-    | TypeParameter(identifier param, dimension* dims)
+    | SymbolicExpression()
+    | TypeParameter(identifier param)
+    | Array(ttype type, dimension* dims, array_physical_type physical_type)
     | FunctionType(ttype* arg_types, ttype? return_var_type,
         abi abi, deftype deftype, string? bindc_name, bool elemental,
-        bool pure, bool module, bool inline, bool static, ttype* type_params,
+        bool pure, bool module, bool inline, bool static,
         symbol* restrictions, bool is_restriction)
 
-restriction_arg = RestrictionArg(identifier restriction_name, symbol restriction_func)
+-- TODO: prefix the enumerators here, improve the names
+array_physical_type
+    = DescriptorArray
+    | PointerToDataArray
+    | UnboundedPointerToDataArray
+    | FixedSizeArray
+    | NumPyArray
+    | ISODescriptorArray
+    | SIMDArray
 
 binop = Add | Sub | Mul | Div | Pow | BitAnd | BitOr | BitXor | BitLShift | BitRShift
 
@@ -413,11 +465,18 @@ cast_kind
     | IntegerToCharacter
     | LogicalToCharacter
     | UnsignedIntegerToInteger
+    | UnsignedIntegerToUnsignedInteger
+    | UnsignedIntegerToReal
+    | UnsignedIntegerToLogical
     | IntegerToUnsignedInteger
+    | RealToUnsignedInteger
+    | CPtrToUnsignedInteger
+    | UnsignedIntegerToCPtr
+    | IntegerToSymbolicExpression
 
 dimension = (expr? start, expr? length)
 
-alloc_arg = (expr a, dimension* dims)
+alloc_arg = (expr a, dimension* dims, expr? len_expr, ttype? type)
 
 attribute = Attribute(identifier name, attribute_arg *args)
 
@@ -439,5 +498,14 @@ type_stmt
     | TypeStmtType(ttype type, stmt* body)
 
 enumtype = IntegerConsecutiveFromZero | IntegerUnique | IntegerNotUnique | NonInteger
+
+require_instantiation = Require(identifier name, identifier* args)
+
+string_format_kind
+    = FormatFortran        -- "(f8.3,i4.2)", a, b
+    | FormatC              -- "%f: %d", a, b
+    | FormatPythonPercent  -- "%f: %d" % (a, b)
+    | FormatPythonFString  -- f"{a}: {b}"
+    | FormatPythonFormat   -- "{}: {}".format(a, b)
 
 }
