@@ -14,6 +14,7 @@ namespace LCompilers {
 bool startswith(const std::string &s, const std::string &e);
 bool endswith(const std::string &s, const std::string &e);
 std::string to_lower(const std::string &s);
+std::vector<std::string> string_split(const std::string &s, const std::string &split_string);
 std::vector<std::string> split(const std::string &s);
 std::string join(const std::string j, const std::vector<std::string> &v);
 std::vector<std::string> slice(const std::vector<std::string> &v,
@@ -25,10 +26,6 @@ char *s2c(Allocator &al, const std::string &s);
 std::string replace(const std::string &s,
     const std::string &regex, const std::string &replace);
 
-// Escapes special characters from the given string.
-// It is used during AST/R to Json conversion.
-std::string get_escaped_str(const std::string &s);
-
 std::string read_file(const std::string &filename);
 
 // Returns the parent path to the given path
@@ -38,7 +35,15 @@ bool is_relative_path(const std::string &path);
 // Joins paths (paths can be empty)
 std::string join_paths(const std::vector<std::string> &paths);
 
-char* unescape_string(Allocator &al, LCompilers::Str &s);
+// Escapes special characters from the given string
+// using C style escaping
+std::string str_escape_c(const std::string &s);
+char* str_unescape_c(Allocator &al, LCompilers::Str &s);
+
+// Escapes double quote characters from the given string
+// given string must be enclosed in double quotes
+std::string str_escape_fortran_double_quote(const std::string &s);
+char* str_unescape_fortran(Allocator &al, LCompilers::Str &s, char ch);
 
 } // namespace LCompilers
 

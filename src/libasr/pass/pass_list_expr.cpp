@@ -3,7 +3,7 @@
 #include <libasr/exception.h>
 #include <libasr/asr_utils.h>
 #include <libasr/asr_verify.h>
-#include <libasr/pass/pass_list_expr.h>
+#include <libasr/pass/list_expr.h>
 #include <libasr/pass/pass_utils.h>
 
 #include <vector>
@@ -48,10 +48,8 @@ public:
             al, loc, idx_vars[0], start, nullptr));
         body.push_back(al, loop_stmt);
 
-        ASR::ttype_t* bool_type = ASRUtils::TYPE(ASR::make_Logical_t(
-            al, loc, 4, nullptr, 0));
-        ASR::ttype_t* int_type = ASRUtils::TYPE(ASR::make_Integer_t(
-            al, loc, 4, nullptr, 0));
+        ASR::ttype_t* bool_type = ASRUtils::TYPE(ASR::make_Logical_t(al, loc, 4));
+        ASR::ttype_t* int_type = ASRUtils::TYPE(ASR::make_Integer_t(al, loc, 4));
         ASR::expr_t *const_zero = ASRUtils::EXPR(
                     ASR::make_IntegerConstant_t(al, loc, 0, int_type));
 
@@ -153,12 +151,10 @@ public:
 
         SymbolTable* list_section_symtab = al.make_new<SymbolTable>(global_scope);
         std::string list_type_name = ASRUtils::get_type_code(list_type, true);
-        std::string fn_name = global_scope->get_unique_name("_lcompilers_list_section_" + list_type_name);
+        std::string fn_name = global_scope->get_unique_name("_lcompilers_list_section_" + list_type_name, false);
         ASR::ttype_t* item_type = ASR::down_cast<ASR::List_t>(list_type)->m_type;
-        ASR::ttype_t* int_type = ASRUtils::TYPE(ASR::make_Integer_t(
-            al, loc, 4, nullptr, 0));
-        ASR::ttype_t* bool_type = ASRUtils::TYPE(ASR::make_Logical_t(
-            al, loc, 4, nullptr, 0));
+        ASR::ttype_t* int_type = ASRUtils::TYPE(ASR::make_Integer_t(al, loc, 4));
+        ASR::ttype_t* bool_type = ASRUtils::TYPE(ASR::make_Logical_t(al, loc, 4));
 
         Vec<ASR::expr_t*> arg_exprs;
         arg_exprs.reserve(al, 4);
@@ -334,7 +330,6 @@ public:
             nullptr,
             false, false, false, false, false,
             nullptr, 0,
-            nullptr, 0,
             false, false, false);
         ASR::symbol_t *fn_sym = ASR::down_cast<ASR::symbol_t>(fn);
         global_scope->add_symbol(fn_name, fn_sym);
@@ -356,10 +351,8 @@ public:
 
     void replace_ListSection(const ASR::ListSection_t* x) {
         Location loc = x->base.base.loc;
-        ASR::ttype_t* int_type = ASRUtils::TYPE(ASR::make_Integer_t(
-            al, loc, 4, nullptr, 0));
-        ASR::ttype_t* bool_type = ASRUtils::TYPE(ASR::make_Logical_t(
-            al, loc, 4, nullptr, 0));
+        ASR::ttype_t* int_type = ASRUtils::TYPE(ASR::make_Integer_t(al, loc, 4));
+        ASR::ttype_t* bool_type = ASRUtils::TYPE(ASR::make_Logical_t(al, loc, 4));
         Vec<ASR::call_arg_t> args;
         args.reserve(al, 4);
         ASR::call_arg_t call_arg;
@@ -412,10 +405,10 @@ public:
         std::string list_type_name = ASRUtils::get_type_code(x->m_type, true);
         if (list_section_func_map.find(list_type_name) == list_section_func_map.end()) {
             create_list_section_func(unit.base.base.loc,
-                unit.m_global_scope, x->m_type);
+                unit.m_symtab, x->m_type);
         }
         ASR::symbol_t *fn_sym = list_section_func_map[list_type_name];
-        *current_expr = ASRUtils::EXPR(ASR::make_FunctionCall_t(al, loc,
+        *current_expr = ASRUtils::EXPR(ASRUtils::make_FunctionCall_t_util(al, loc,
             fn_sym, nullptr, args.p, args.n, x->m_type, nullptr, nullptr));
     }
 
@@ -438,7 +431,7 @@ public:
         */
         SymbolTable* list_concat_symtab = al.make_new<SymbolTable>(global_scope);
         std::string list_type_name = ASRUtils::get_type_code(list_type, true);
-        std::string fn_name = global_scope->get_unique_name("_lcompilers_list_concat_" + list_type_name);
+        std::string fn_name = global_scope->get_unique_name("_lcompilers_list_concat_" + list_type_name, false);
 
         Vec<ASR::expr_t*> arg_exprs;
         arg_exprs.reserve(al, 2);
@@ -467,8 +460,7 @@ public:
         ASR::stmt_t* list_concat_stmt = ASRUtils::STMT(ASR::make_Assignment_t(
             al, loc, res_list, value, nullptr));
         body.push_back(al, list_concat_stmt);
-        ASR::ttype_t* int_type = ASRUtils::TYPE(ASR::make_Integer_t(
-            al, loc, 4, nullptr, 0));
+        ASR::ttype_t* int_type = ASRUtils::TYPE(ASR::make_Integer_t(al, loc, 4));
         ASR::ttype_t* item_type = ASR::down_cast<ASR::List_t>(list_type)->m_type;
 
         // Declare `__1_k` for iterations and assign `0`
@@ -505,7 +497,6 @@ public:
             nullptr,
             false, false, false, false, false,
             nullptr, 0,
-            nullptr, 0,
             false, false, false);
         ASR::symbol_t *fn_sym = ASR::down_cast<ASR::symbol_t>(fn);
         global_scope->add_symbol(fn_name, fn_sym);
@@ -538,10 +529,10 @@ public:
         std::string list_type_name =  ASRUtils::get_type_code(x->m_type, true);
         if (list_concat_func_map.find(list_type_name) == list_concat_func_map.end()) {
             create_concat_function(unit.base.base.loc,
-                unit.m_global_scope, x->m_type);
+                unit.m_symtab, x->m_type);
         }
         ASR::symbol_t *fn_sym = list_concat_func_map[list_type_name];
-        *current_expr = ASRUtils::EXPR(ASR::make_FunctionCall_t(al, loc,
+        *current_expr = ASRUtils::EXPR(ASRUtils::make_FunctionCall_t_util(al, loc,
             fn_sym, nullptr, args.p, 2, x->m_type, nullptr, nullptr));
     }
 

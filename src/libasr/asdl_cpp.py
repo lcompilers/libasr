@@ -417,7 +417,7 @@ class ASRPassWalkVisitorVisitor(ASDLVisitor):
         self.emit("private:")
         self.emit("    Struct& self() { return static_cast<Struct&>(*this); }")
         self.emit("public:")
-        self.emit("    SymbolTable* current_scope;")
+        self.emit("    SymbolTable* current_scope=nullptr;")
         self.emit("    void transform_stmts(ASR::stmt_t **&m_body, size_t &n_body) {")
         self.emit("    for (size_t i = 0; i < n_body; i++) {", 1)
         self.emit("        self().visit_stmt(*m_body[i]);", 1)
@@ -527,7 +527,7 @@ class CallReplacerOnExpressionsVisitor(ASDLVisitor):
         self.emit("    Struct& self() { return static_cast<Struct&>(*this); }")
         self.emit("public:")
         self.emit("    ASR::expr_t** current_expr;")
-        self.emit("    SymbolTable* current_scope;")
+        self.emit("    SymbolTable* current_scope=nullptr;")
         self.emit("")
         self.emit("    void call_replacer() {}")
         self.emit("    void transform_stmts(ASR::stmt_t **&m_body, size_t &n_body) {")
@@ -1109,6 +1109,8 @@ class ExprStmtDuplicatorVisitor(ASDLVisitor):
                     self.emit("    ASR::alloc_arg_t alloc_arg_copy;", level)
                     self.emit("    alloc_arg_copy.loc = x->m_%s[i].loc;"%(field.name), level)
                     self.emit("    alloc_arg_copy.m_a = self().duplicate_expr(x->m_%s[i].m_a);"%(field.name), level)
+                    self.emit("    alloc_arg_copy.m_len_expr = self().duplicate_expr(x->m_%s[i].m_len_expr);"%(field.name), level)
+                    self.emit("    alloc_arg_copy.m_type = self().duplicate_ttype(x->m_%s[i].m_type);"%(field.name), level)
                     self.emit("    alloc_arg_copy.n_dims = x->m_%s[i].n_dims;"%(field.name), level)
                     self.emit("    Vec<ASR::dimension_t> dims_copy;", level)
                     self.emit("    dims_copy.reserve(al, alloc_arg_copy.n_dims);", level)
@@ -1295,7 +1297,14 @@ class ExprBaseReplacerVisitor(ASDLVisitor):
                     self.emit("    current_expr = &(x->m_%s[i].m_start);" % (field.name), level)
                     self.emit("    self().replace_expr(x->m_%s[i].m_start);"%(field.name), level)
                     self.emit("    current_expr = current_expr_copy_%d;" % (self.current_expr_copy_variable_count), level)
+                elif field.type == "expr":
+                    self.emit("    ASR::expr_t** current_expr_copy_%d = current_expr;" % (self.current_expr_copy_variable_count), level)
+                    self.emit("    current_expr = &(x->m_%s[i]);" % (field.name), level)
+                    self.emit("    self().replace_expr(x->m_%s[i]);"%(field.name), level)
+                    self.emit("    current_expr = current_expr_copy_%d;" % (self.current_expr_copy_variable_count), level)
                     self.current_expr_copy_variable_count += 1
+                elif field.type == "ttype":
+                    self.emit("    self().replace_%s(x->m_%s[i]);" % (field.type, field.name), level)
                 self.emit("}", level)
             else:
                 if field.type != "symbol":
@@ -1657,12 +1666,12 @@ class PickleVisitorVisitor(ASDLVisitor):
             elif field.type == "string" and not field.seq:
                 if field.opt:
                     self.emit("if (x.m_%s) {" % field.name, 2)
-                    self.emit(    's.append("\\"" + get_escaped_str(x.m_%s) + "\\"");' % field.name, 3)
+                    self.emit(    's.append("\\"" + str_escape_c(x.m_%s) + "\\"");' % field.name, 3)
                     self.emit("} else {", 2)
                     self.emit(    's.append("()");', 3)
                     self.emit("}", 2)
                 else:
-                    self.emit('s.append("\\"" + get_escaped_str(x.m_%s) + "\\"");' % field.name, 2)
+                    self.emit('s.append("\\"" + str_escape_c(x.m_%s) + "\\"");' % field.name, 2)
             elif field.type == "int" and not field.seq:
                 if field.opt:
                     self.emit("if (x.m_%s) {" % field.name, 2)
@@ -1673,6 +1682,10 @@ class PickleVisitorVisitor(ASDLVisitor):
                 else:
                     if field.name == "intrinsic_id":
                         self.emit('s.append(self().convert_intrinsic_id(x.m_%s));' % field.name, 2)
+                    elif field.name == "impure_intrinsic_id":
+                        self.emit('s.append(self().convert_impure_intrinsic_id(x.m_%s));' % field.name, 2)
+                    elif field.name == "arr_intrinsic_id":
+                        self.emit('s.append(self().convert_array_intrinsic_id(x.m_%s));' % field.name, 2)
                     else:
                         self.emit('s.append(std::to_string(x.m_%s));' % field.name, 2)
             elif field.type == "float" and not field.seq and not field.opt:
@@ -1705,6 +1718,7 @@ class JsonVisitorVisitor(ASDLVisitor):
         self.emit(  "Struct& self() { return static_cast<Struct&>(*this); }", 1)
         self.emit("public:")
         self.emit(  "std::string s, indtd = \"\";", 1)
+        self.emit(  "bool no_loc = false;", 1)
         self.emit(  "int indent_level = 0, indent_spaces = 4;", 1)
         # Storing a reference to LocationManager like this isn't ideal.
         # One must make sure JsonBaseVisitor isn't reused in a case where AST/ASR has changed
@@ -1726,7 +1740,9 @@ class JsonVisitorVisitor(ASDLVisitor):
         self.emit(      "indtd = std::string(indent_level*indent_spaces, ' ');",2)
         self.emit(  "}",1)
         self.emit(  "void append_location(std::string &s, uint32_t first, uint32_t last) {", 1)
-        self.emit(      's.append("\\"loc\\": {");', 2);
+        self.emit(      'if (no_loc) return;', 2)
+        self.emit(      's.append(",\\n" + indtd);', 2)
+        self.emit(      's.append("\\"loc\\": {");', 2)
         self.emit(      'inc_indent();', 2)
         self.emit(      's.append("\\n" + indtd);', 2)
         self.emit(      's.append("\\"first\\": " + std::to_string(first));', 2)
@@ -1796,7 +1812,6 @@ class JsonVisitorVisitor(ASDLVisitor):
                     self.emit('s.append(",\\n" + indtd);', 2)
             self.emit('dec_indent(); s.append("\\n" + indtd);', 2)
         self.emit(    's.append("}");', 2)
-        self.emit(    's.append(",\\n" + indtd);', 2)
         if name in products:
             self.emit(    'append_location(s, x.loc.first, x.loc.last);', 2)
         else:
@@ -1929,12 +1944,12 @@ class JsonVisitorVisitor(ASDLVisitor):
             elif field.type == "string" and not field.seq:
                 if field.opt:
                     self.emit("if (x.m_%s) {" % field.name, 2)
-                    self.emit(    's.append("\\"" + get_escaped_str(x.m_%s) + "\\"");' % field.name, 3)
+                    self.emit(    's.append("\\"" + str_escape_c(x.m_%s) + "\\"");' % field.name, 3)
                     self.emit("} else {", 2)
                     self.emit(    's.append("[]");', 3)
                     self.emit("}", 2)
                 else:
-                    self.emit('s.append("\\"" + get_escaped_str(x.m_%s) + "\\"");' % field.name, 2)
+                    self.emit('s.append("\\"" + str_escape_c(x.m_%s) + "\\"");' % field.name, 2)
             elif field.type == "int" and not field.seq:
                 if field.opt:
                     self.emit("if (x.m_%s) {" % field.name, 2)

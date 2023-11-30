@@ -34,8 +34,41 @@ typedef double _Complex double_complex_t;
 #define LFORTRAN_API /* Nothing */
 #endif
 
+
+
+#ifndef ASSERT
+#define ASSERT(cond)                                                           \
+    {                                                                          \
+        if (!(cond)) {                                                         \
+            printf("%s%s", "ASSERT failed: ", __FILE__);                       \
+            printf("%s%s", "\nfunction ", __func__);                           \
+            printf("%s%d%s", "(), line number ", __LINE__, " at \n");          \
+            printf("%s%s", #cond, "\n");                                       \
+            exit(1);                                                           \
+        }                                                                      \
+    }
+#endif
+
+#ifndef ASSERT_MSG
+#define ASSERT_MSG(cond, fmt, msg)                                                  \
+    {                                                                          \
+        if (!(cond)) {                                                         \
+            printf("%s%s", "ASSERT failed: ", __FILE__);                       \
+            printf("%s%s", "\nfunction ", __func__);                           \
+            printf("%s%d%s", "(), line number ", __LINE__, " at \n");          \
+            printf("%s%s", #cond, "\n");                                       \
+            printf("%s", "ERROR MESSAGE: ");                                  \
+            printf(fmt, msg);                                                  \
+            printf("%s", "\n");                                                \
+            exit(1);                                                           \
+        }                                                                      \
+    }
+#endif
+
 LFORTRAN_API double _lfortran_sum(int n, double *v);
 LFORTRAN_API void _lfortran_random_number(int n, double *v);
+LFORTRAN_API void _lfortran_init_random_clock();
+LFORTRAN_API void _lfortran_init_random_seed(unsigned seed);
 LFORTRAN_API double _lfortran_random();
 LFORTRAN_API int _lfortran_randrange(int lower, int upper);
 LFORTRAN_API int _lfortran_random_int(int lower, int upper);
@@ -137,6 +170,10 @@ LFORTRAN_API float _lfortran_satanh(float x);
 LFORTRAN_API double _lfortran_datanh(double x);
 LFORTRAN_API float_complex_t _lfortran_catanh(float_complex_t x);
 LFORTRAN_API double_complex_t _lfortran_zatanh(double_complex_t x);
+LFORTRAN_API float _lfortran_strunc(float x);
+LFORTRAN_API double _lfortran_dtrunc(double x);
+LFORTRAN_API float _lfortran_sfix(float x);
+LFORTRAN_API double _lfortran_dfix(double x);
 LFORTRAN_API float _lfortran_cphase(float_complex_t x);
 LFORTRAN_API double _lfortran_zphase(double_complex_t x);
 LFORTRAN_API bool _lpython_str_compare_eq(char** s1, char** s2);
@@ -169,9 +206,10 @@ LFORTRAN_API void _lfortran_memset(void* s, int32_t c, int32_t size);
 LFORTRAN_API int8_t* _lfortran_realloc(int8_t* ptr, int32_t size);
 LFORTRAN_API int8_t* _lfortran_calloc(int32_t count, int32_t size);
 LFORTRAN_API void _lfortran_free(char* ptr);
-LFORTRAN_API void _lfortran_string_alloc(char** ptr, int32_t len);
+LFORTRAN_API void _lfortran_alloc(char** ptr, int32_t len);
 LFORTRAN_API void _lfortran_string_init(int size_plus_one, char *s);
 LFORTRAN_API char* _lfortran_str_item(char* s, int32_t idx);
+LFORTRAN_API char* _lfortran_str_copy(char* s, int32_t idx1, int32_t idx2); // idx1 and idx2 both start from 1
 LFORTRAN_API char* _lfortran_str_slice(char* s, int32_t idx1, int32_t idx2, int32_t step,
                         bool idx1_present, bool idx2_present);
 LFORTRAN_API char* _lfortran_str_slice_assign(char* s, char *r, int32_t idx1, int32_t idx2, int32_t step,
@@ -215,11 +253,22 @@ LFORTRAN_API double _lfortran_time();
 LFORTRAN_API void _lfortran_sp_rand_num(float *x);
 LFORTRAN_API void _lfortran_dp_rand_num(double *x);
 LFORTRAN_API int64_t _lpython_open(char *path, char *flags);
-LFORTRAN_API int64_t _lfortran_open(int32_t unit_num, char *f_name, char *status);
-LFORTRAN_API void _lfortran_inquire(char *f_name, bool *exists);
+LFORTRAN_API int64_t _lfortran_open(int32_t unit_num, char *f_name, char *status, char* form);
+LFORTRAN_API void _lfortran_flush(int32_t unit_num);
+LFORTRAN_API void _lfortran_inquire(char *f_name, bool *exists, int32_t unit_num, bool *opened);
+LFORTRAN_API void _lfortran_formatted_read(int32_t unit_num, int32_t* iostat, char* fmt, int32_t no_of_args, ...);
 LFORTRAN_API char* _lpython_read(int64_t fd, int64_t n);
 LFORTRAN_API void _lfortran_read_int32(int32_t *p, int32_t unit_num);
+LFORTRAN_API void _lfortran_read_int64(int64_t *p, int32_t unit_num);
+LFORTRAN_API void _lfortran_read_array_int32(int32_t *p, int array_size, int32_t unit_num);
+LFORTRAN_API void _lfortran_read_double(double *p, int32_t unit_num);
+LFORTRAN_API void _lfortran_read_float(float *p, int32_t unit_num);
+LFORTRAN_API void _lfortran_read_array_float(float *p, int array_size, int32_t unit_num);
+LFORTRAN_API void _lfortran_read_array_double(double *p, int array_size, int32_t unit_num);
 LFORTRAN_API void _lfortran_read_char(char **p, int32_t unit_num);
+LFORTRAN_API void _lfortran_string_write(char **str, const char *format, ...);
+LFORTRAN_API void _lfortran_file_write(int32_t unit_num, const char *format, ...);
+LFORTRAN_API void _lfortran_empty_read(int32_t unit_num, int32_t* iostat);
 LFORTRAN_API void _lpython_close(int64_t fd);
 LFORTRAN_API void _lfortran_close(int32_t unit_num);
 LFORTRAN_API int32_t _lfortran_ichar(char *c);
@@ -231,6 +280,8 @@ LFORTRAN_API char *_lpython_get_argv(int32_t index);
 LFORTRAN_API void print_stacktrace_addresses(char *filename, bool use_colors);
 LFORTRAN_API char *_lfortran_get_env_variable(char *name);
 LFORTRAN_API int _lfortran_exec_command(char *cmd);
+
+LFORTRAN_API char* _lcompilers_string_format_fortran(int count, const char* format, ...);
 
 #ifdef __cplusplus
 }

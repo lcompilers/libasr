@@ -74,7 +74,9 @@ namespace LCompilers {
                     llvm::LLVMContext& context,
                     llvm::IRBuilder<>* builder,
                     LLVMUtils* llvm_utils,
-                    DESCR_TYPE descr_type);
+                    DESCR_TYPE descr_type,
+                    CompilerOptions& co_,
+                    std::vector<llvm::Value*>& heap_arrays_);
 
                 /*
                 * Checks whether the given ASR::ttype_t* is an
@@ -119,17 +121,6 @@ namespace LCompilers {
                     bool get_pointer=false) = 0;
 
                 /*
-                * Same as get_array_type but for allocatable
-                * arrays. It doesn't require dimensions for
-                * creating array llvm::Type*.
-                */
-                virtual
-                llvm::Type* get_malloc_array_type(
-                    ASR::ttype_t* m_type_,
-                    llvm::Type* el_type,
-                    bool get_pointer=false) = 0;
-
-                /*
                 * Creates an array of dimension descriptors
                 * whose each element describes structure
                 * of a dimension's information.
@@ -145,7 +136,7 @@ namespace LCompilers {
                 void fill_array_details(
                     llvm::Value* arr, llvm::Type* llvm_data_type, int n_dims,
                     std::vector<std::pair<llvm::Value*, llvm::Value*>>& llvm_dims,
-                    bool reserve_data_memory=true) = 0;
+                    llvm::Module* module, bool reserve_data_memory=true) = 0;
 
                 virtual
                 void fill_array_details(
@@ -160,11 +151,15 @@ namespace LCompilers {
                 void fill_malloc_array_details(
                     llvm::Value* arr, llvm::Type* llvm_data_type, int n_dims,
                     std::vector<std::pair<llvm::Value*, llvm::Value*>>& llvm_dims,
-                    llvm::Module* module) = 0;
+                    llvm::Module* module, bool realloc=false) = 0;
 
                 virtual
                 void fill_dimension_descriptor(
                     llvm::Value* arr, int n_dims) = 0;
+
+                virtual
+                void reset_array_details(
+                    llvm::Value* arr, llvm::Value* source_arr, int n_dims) = 0;
 
                 virtual
                 void fill_descriptor_for_array_section(
@@ -273,16 +268,14 @@ namespace LCompilers {
                     std::vector<llvm::Value*>& m_args, int n_args,
                     bool data_only=false, bool is_fixed_size=false,
                     llvm::Value** llvm_diminfo=nullptr,
-                    bool polymorphic=false, llvm::Type* polymorphic_type=nullptr) = 0;
+                    bool polymorphic=false, llvm::Type* polymorphic_type=nullptr, bool is_unbounded_pointer_to_data = false) = 0;
 
                 virtual
-                llvm::Value* get_is_allocated_flag(llvm::Value* array) = 0;
+                llvm::Value* get_is_allocated_flag(llvm::Value* array, llvm::Type* llvm_data_type) = 0;
 
                 virtual
-                void set_is_allocated_flag(llvm::Value* array, bool status) = 0;
+                void reset_is_allocated_flag(llvm::Value* array, llvm::Type* llvm_data_type) = 0;
 
-                virtual
-                void set_is_allocated_flag(llvm::Value* array, llvm::Value* status) = 0;
 
                 virtual
                 llvm::Value* reshape(llvm::Value* array, llvm::Type* llvm_data_type,
@@ -296,7 +289,7 @@ namespace LCompilers {
 
                 virtual
                 void copy_array_data_only(llvm::Value* src, llvm::Value* dest,
-                                          llvm::Module* module, ASR::ttype_t* asr_data_type,
+                                          llvm::Module* module, llvm::Type* llvm_data_type,
                                           llvm::Value* num_elements) = 0;
 
                 virtual
@@ -317,19 +310,23 @@ namespace LCompilers {
 
                 std::map<std::string, std::pair<llvm::StructType*, llvm::Type*>> tkr2array;
 
+                CompilerOptions& co;
+                std::vector<llvm::Value*>& heap_arrays;
+
                 llvm::Value* cmo_convertor_single_element(
                     llvm::Value* arr, std::vector<llvm::Value*>& m_args,
                     int n_args, bool check_for_bounds);
 
                 llvm::Value* cmo_convertor_single_element_data_only(
                     llvm::Value** llvm_diminfo, std::vector<llvm::Value*>& m_args,
-                    int n_args, bool check_for_bounds);
+                    int n_args, bool check_for_bounds, bool is_unbounded_pointer_to_data = false);
 
             public:
 
                 SimpleCMODescriptor(llvm::LLVMContext& _context,
                     llvm::IRBuilder<>* _builder,
-                    LLVMUtils* _llvm_utils);
+                    LLVMUtils* _llvm_utils, CompilerOptions& co_,
+                    std::vector<llvm::Value*>& heap_arrays);
 
                 virtual
                 bool is_array(ASR::ttype_t* asr_type);
@@ -354,19 +351,13 @@ namespace LCompilers {
                     bool get_pointer=false);
 
                 virtual
-                llvm::Type* get_malloc_array_type(
-                    ASR::ttype_t* m_type_,
-                    llvm::Type* el_type,
-                    bool get_pointer=false);
-
-                virtual
                 llvm::Type* create_dimension_descriptor_array_type();
 
                 virtual
                 void fill_array_details(
                     llvm::Value* arr, llvm::Type* llvm_data_type, int n_dims,
                     std::vector<std::pair<llvm::Value*, llvm::Value*>>& llvm_dims,
-                    bool reserve_data_memory=true);
+                    llvm::Module* module, bool reserve_data_memory=true);
 
                 virtual
                 void fill_array_details(
@@ -377,11 +368,15 @@ namespace LCompilers {
                 void fill_malloc_array_details(
                     llvm::Value* arr, llvm::Type* llvm_data_type, int n_dims,
                     std::vector<std::pair<llvm::Value*, llvm::Value*>>& llvm_dims,
-                    llvm::Module* module);
+                    llvm::Module* module, bool realloc=false);
 
                 virtual
                 void fill_dimension_descriptor(
                     llvm::Value* arr, int n_dims);
+
+                virtual
+                void reset_array_details(
+                    llvm::Value* arr, llvm::Value* source_arr, int n_dims);
 
                 virtual
                 void fill_descriptor_for_array_section(
@@ -441,16 +436,13 @@ namespace LCompilers {
                     std::vector<llvm::Value*>& m_args, int n_args,
                     bool data_only=false, bool is_fixed_size=false,
                     llvm::Value** llvm_diminfo=nullptr,
-                    bool polymorphic=false, llvm::Type* polymorphic_type=nullptr);
+                    bool polymorphic=false, llvm::Type* polymorphic_type=nullptr, bool is_unbounded_pointer_to_data = false);
 
                 virtual
-                llvm::Value* get_is_allocated_flag(llvm::Value* array);
+                llvm::Value* get_is_allocated_flag(llvm::Value* array, llvm::Type* llvm_data_type);
 
                 virtual
-                void set_is_allocated_flag(llvm::Value* array, bool status);
-
-                virtual
-                void set_is_allocated_flag(llvm::Value* array, llvm::Value* status);
+                void reset_is_allocated_flag(llvm::Value* array, llvm::Type* llvm_data_type);
 
                 virtual
                 llvm::Value* reshape(llvm::Value* array, llvm::Type* llvm_data_type,
@@ -464,7 +456,7 @@ namespace LCompilers {
 
                 virtual
                 void copy_array_data_only(llvm::Value* src, llvm::Value* dest,
-                                          llvm::Module* module, ASR::ttype_t* asr_data_type,
+                                          llvm::Module* module, llvm::Type* llvm_data_type,
                                           llvm::Value* num_elements);
 
                 virtual

@@ -21,9 +21,9 @@ struct SymbolTable {
     public:
     SymbolTable *parent;
     // The ASR node (either symbol_t or TranslationUnit_t) that contains this
-    // SymbolTable as m_symtab / m_global_scope member. One of:
+    // SymbolTable as m_symtab member. One of:
     // * symbol_symtab(down_cast<symbol_t>(this->asr_owner)) == this
-    // * down_cast2<TranslationUnit_t>(this->asr_owner)->m_global_scope == this
+    // * down_cast2<TranslationUnit_t>(this->asr_owner)->m_symtab == this
     ASR::asr_t *asr_owner = nullptr;
     unsigned int counter;
 
@@ -95,11 +95,7 @@ struct SymbolTable {
     ASR::symbol_t *find_scoped_symbol(const std::string &name,
         size_t n_scope_names, char **m_scope_names);
 
-    std::string get_unique_name(const std::string &name);
-
-    void move_symbols_from_global_scope(Allocator &al,
-        SymbolTable *module_scope, Vec<char *> &syms,
-        SetChar &mod_dependencies);
+    std::string get_unique_name(const std::string &name, bool use_unique_id=true);
 };
 
 } // namespace LCompilers
